@@ -51,8 +51,8 @@ export function defaultScenario(): Scenario {
     levelHeight: 1.8,
     accel: 0.6,
     conveyorSpacing: 0.7,
-    initialOccupancy: 0.65,
-    dwellDays: 12,
+    initialOccupancy: 0.7,
+    dwellDays: 4,
     slotting: 'abc',
     skus: [
       { sku: 'SKU-A1', description: 'Alto giro 1', cls: 'A', share: 0.35, cartonsPerPallet: 80 },

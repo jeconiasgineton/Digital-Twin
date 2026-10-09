@@ -131,8 +131,8 @@ export class Pool<T extends PoolItem> {
   private qLen = 0;
   statsFrom = 0;
   maxQueue = 0;
-  /** itens sinalizados para parada após a tarefa atual (quebra) */
-  private failing = new Set<T>();
+  /** itens com quebra pendente (ocupados): entram em reparo ao serem liberados */
+  private pendingFail = new Map<T, { repair: number; sig: Signal }>();
   onWait?: (w: number) => void;
 
   constructor(private sim: Sim, items: T[]) {
@@ -196,9 +196,11 @@ export class Pool<T extends PoolItem> {
   release(item: T) {
     this._account(item);
     item.busy = false;
-    if (this.failing.has(item)) {
-      this.failing.delete(item);
-      return; // permanece fora de serviço; retorno agendado por `scheduleReturn`
+    const pf = this.pendingFail.get(item);
+    if (pf) {
+      this.pendingFail.delete(item);
+      this._repair(item, pf.repair, pf.sig);
+      return;
     }
     this._offer(item);
   }
@@ -219,31 +221,30 @@ export class Pool<T extends PoolItem> {
     if (this.sim.now > from) item.busyTime += this.sim.now - from;
   }
 
-  /** Parada (quebra) do recurso por `repair` segundos, após concluir a tarefa atual. */
-  fail(item: T, repair: number) {
+  /**
+   * Quebra do recurso: se ocioso, entra em reparo imediatamente; se ocupado, ao concluir a tarefa atual.
+   * Retorna um sinal disparado quando o recurso volta a operar.
+   */
+  fail(item: T, repair: number): Signal {
+    const sig = new Signal(this.sim);
     const idx = this.idle.indexOf(item);
     if (idx >= 0) {
       this.idle.splice(idx, 1);
-      this._returnLater(item, repair);
+      this._repair(item, repair, sig);
     } else {
-      this.failing.add(item);
-      // quando liberado, ficará offline; agendamos o retorno a partir de agora (aprox.)
-      this._returnLater(item, repair, true);
+      this.pendingFail.set(item, { repair, sig });
     }
+    return sig;
   }
 
-  private _returnLater(item: T, repair: number, waitRelease = false) {
+  private _repair(item: T, repair: number, sig: Signal) {
     const start = this.sim.now;
-    const back = () => {
-      if (waitRelease && (item.busy || this.failing.has(item))) {
-        // ainda trabalhando – tenta novamente depois
-        this.sim.schedule(10, back);
-        return;
-      }
-      if (this.sim.now >= this.statsFrom) item.downTime += this.sim.now - Math.max(start, this.statsFrom);
+    this.sim.schedule(repair, () => {
+      const from = Math.max(start, this.statsFrom);
+      if (this.sim.now > from) item.downTime += this.sim.now - from;
       this._offer(item);
-    };
-    this.sim.schedule(repair, back);
+      sig.fire();
+    });
   }
 
   private _qUpdate() {

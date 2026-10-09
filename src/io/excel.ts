@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import type { Dist, DistKind, Layout, LayoutElement, Scenario, SkuSpec } from '../model/types';
 import { defaultScenario } from '../model/defaults';
 import { defaultLayoutParams, generateLayout, newId, type LayoutParams } from '../model/layoutGen';
+import { linearEnds, toWorld } from '../math/spatial';
 
 export interface ImportResult {
   scenario: Scenario;
@@ -320,8 +321,11 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
       let maxX = 0;
       let maxZ = 0;
       for (const e of els) {
-        maxX = Math.max(maxX, e.x + (e.type === 'wall' || e.type === 'conveyor' ? e.length : e.length / 2));
-        maxZ = Math.max(maxZ, e.z + (e.type === 'wall' || e.type === 'conveyor' ? e.length : e.width / 2));
+        const pts = e.type === 'wall' || e.type === 'conveyor' ? linearEnds(e) : [toWorld(e, -e.length / 2, -e.width / 2), toWorld(e, e.length / 2, -e.width / 2), toWorld(e, e.length / 2, e.width / 2), toWorld(e, -e.length / 2, e.width / 2)];
+        for (const p of pts) {
+          maxX = Math.max(maxX, p.x);
+          maxZ = Math.max(maxZ, p.z);
+        }
       }
       layout = { name: 'Layout da planilha', floor: { width: Math.ceil(maxX + 2), depth: Math.ceil(maxZ + 2) }, elements: els };
     }

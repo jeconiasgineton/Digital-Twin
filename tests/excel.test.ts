@@ -19,3 +19,13 @@ describe('excel', () => {
     expect(r.scenario.skus.reduce((s, k) => s + k.share, 0)).toBeCloseTo(1, 6);
   });
 });
+
+describe('excel – dimensões do piso', () => {
+  it('piso derivado dos extremos reais (paredes giradas não inflam a largura)', async () => {
+    const sc = defaultScenario();
+    const layout = generateLayout(defaultLayoutParams());
+    const r = await importWorkbook(await exportTemplate(sc, layout));
+    expect(Math.abs(r.layout!.floor.width - layout.floor.width)).toBeLessThan(3.5);
+    expect(Math.abs(r.layout!.floor.depth - layout.floor.depth)).toBeLessThan(3.5);
+  });
+});

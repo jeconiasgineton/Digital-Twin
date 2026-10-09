@@ -11,7 +11,7 @@ export interface LayoutParams {
   bayLength?: number;
 }
 
-export const defaultLayoutParams = (): LayoutParams => ({ docksIn: 3, docksOut: 3, rackRows: 6, baysPerRow: 22, levels: 4, conveyors: 1, stations: 2 });
+export const defaultLayoutParams = (): LayoutParams => ({ docksIn: 3, docksOut: 3, rackRows: 8, baysPerRow: 30, levels: 5, conveyors: 1, stations: 2 });
 
 let seq = 0;
 export const newId = (p = 'el') => `${p}${Date.now().toString(36)}${(seq++).toString(36)}`;

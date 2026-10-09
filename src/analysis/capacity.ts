@@ -100,7 +100,7 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
     return (lamIn.avg * idc(bIn) + lamOut.avg * idc(bOut)) / l;
   })();
   // empilhadeiras em modo "chegadas em lote": o tempo de espera cresce com o lote; limitamos a ca2 para refletir paralelismo
-  const ca2Eff = Math.min(ca2F, 12);
+  const ca2Eff = ca2F;
   const wt = sc.targetWaitP95Min * 60;
   const mkRow = (
     key: string, name: string, unit: string, current: number, avail: number, lamAvg: number, lamPeak: number, sAvg: number, sPeak: number, scv: number, ca2: number, note: string,

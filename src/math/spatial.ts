@@ -250,22 +250,41 @@ export function dijkstraField(g: NavGrid, src: number): DistField {
   return { src, dist, parent };
 }
 
+/** estado reutilizável do A* (evita alocar vetores do tamanho da grade a cada consulta) */
+interface AStarState {
+  g: Float32Array;
+  parent: Int32Array;
+  stamp: Int32Array;
+  closed: Int32Array;
+  gen: number;
+  heap: MinHeap;
+}
+const astarStates = new WeakMap<NavGrid, AStarState>();
+
 /** A* entre duas células. Retorna lista de células ou null. */
 export function astar(g: NavGrid, s: number, t: number): number[] | null {
   if (s === t) return [s];
   const n = g.w * g.h;
-  const gScore = new Float32Array(n).fill(Infinity);
-  const parent = new Int32Array(n).fill(-1);
-  const closed = new Uint8Array(n);
+  let st = astarStates.get(g);
+  if (!st) {
+    st = { g: new Float32Array(n), parent: new Int32Array(n), stamp: new Int32Array(n), closed: new Int32Array(n), gen: 0, heap: new MinHeap() };
+    astarStates.set(g, st);
+  }
+  const gen = ++st.gen;
+  const { g: gScore, parent, stamp, closed } = st;
+  const heap = st.heap;
+  heap.keys.length = 0;
+  heap.vals.length = 0;
   const tx = t % g.w;
   const tz = (t / g.w) | 0;
   const hfun = (i: number) => {
     const dx = Math.abs((i % g.w) - tx);
     const dz = Math.abs(((i / g.w) | 0) - tz);
-    return Math.max(dx, dz) + (SQ2 - 1) * Math.min(dx, dz);
+    return (Math.max(dx, dz) + (SQ2 - 1) * Math.min(dx, dz)) * 1.001;
   };
-  const heap = new MinHeap();
+  stamp[s] = gen;
   gScore[s] = 0;
+  parent[s] = -1;
   heap.push(hfun(s), s);
   while (heap.size) {
     const u = heap.pop();
@@ -278,15 +297,16 @@ export function astar(g: NavGrid, s: number, t: number): number[] | null {
       }
       return path.reverse();
     }
-    if (closed[u]) continue;
-    closed[u] = 1;
+    if (closed[u] === gen) continue;
+    closed[u] = gen;
     const cx = u % g.w;
     const cz = (u / g.w) | 0;
     for (const [dx, dz, c] of NB) {
       if (!canStep(g, cx, cz, dx, dz)) continue;
       const v = (cz + dz) * g.w + cx + dx;
       const ng = gScore[u] + c;
-      if (ng < gScore[v]) {
+      if (stamp[v] !== gen || ng < gScore[v]) {
+        stamp[v] = gen;
         gScore[v] = ng;
         parent[v] = u;
         heap.push(ng + hfun(v), v);

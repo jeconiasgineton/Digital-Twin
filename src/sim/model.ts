@@ -140,7 +140,7 @@ export class SimModel {
         sim.spawn(function* () {
           for (;;) {
             yield rng.exp(mtbf);
-            pool.fail(it, rng.exp(MTTR));
+            yield pool.fail(it, rng.exp(MTTR)); // espera o retorno antes de sortear a próxima falha
           }
         });
       }
@@ -496,6 +496,34 @@ export class SimModel {
         prevW = bw;
       }
     }
+  }
+
+  /** estatísticas instantâneas para o painel ao vivo */
+  snapshot() {
+    const now = Math.max(1, this.sim.now - this.warm);
+    const u = (p: Pool<any>) => (p.items.length ? this.busyTotal(p) / (now * p.items.length) : 0);
+    const stock = this.world.racks.reduce((s, r) => s + r.stock, 0);
+    return {
+      t: this.sim.now,
+      palletsIn: this.c.palletsIn,
+      palletsOut: this.c.palletsOut,
+      orders: this.c.orders,
+      trucksIn: this.c.trucksIn,
+      trucksOut: this.c.trucksOut,
+      utilForklift: u(this.forklifts),
+      utilWorker: u(this.workers),
+      utilDockIn: u(this.dockIn),
+      utilDockOut: u(this.dockOut),
+      queueForklift: this.forklifts.queueLength,
+      queueWorker: this.workers.queueLength,
+      queueDockIn: this.dockIn.queueLength,
+      queueDockOut: this.dockOut.queueLength,
+      forkliftsBusy: this.forklifts.items.filter((a) => a.busy).length,
+      workersBusy: this.workers.items.filter((a) => a.busy).length,
+      occupancy: stock / (this.world.totalCapacity || 1),
+      stockouts: this.c.stockouts,
+      overflow: this.c.overflow,
+    };
   }
 
   /* ---------------- execução / resultados ---------------- */

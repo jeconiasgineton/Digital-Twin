@@ -22,12 +22,13 @@ export function runExperiment(sc: Scenario, layout: Layout, onProgress?: (done: 
     reps.push(m.runAll());
     onProgress?.(i + 1, sc.replications);
   }
-  // série horária média; amostras concatenadas (limitadas) para histogramas
-  const nh = Math.min(...reps.map((r) => r.hourly.length));
-  const hourly = Array.from({ length: nh }, (_, h) => {
-    const avg = (f: (x: ReplicationResult['hourly'][number]) => number) => reps.reduce((s, r) => s + f(r.hourly[h]), 0) / reps.length;
+  // série por hora do dia operacional: média entre dias e réplicas (perfil intradiário)
+  const shift = Math.max(1, Math.round(sc.shiftHours));
+  const hourly = Array.from({ length: shift }, (_, hod) => {
+    const pts = reps.flatMap((r) => r.hourly.filter((x) => x.hour % shift === hod));
+    const avg = (f: (x: ReplicationResult['hourly'][number]) => number) => (pts.length ? pts.reduce((s, x) => s + f(x), 0) / pts.length : 0);
     return {
-      hour: reps[0].hourly[h].hour,
+      hour: hod,
       palletsIn: avg((x) => x.palletsIn), palletsOut: avg((x) => x.palletsOut), orders: avg((x) => x.orders),
       utilForklift: avg((x) => x.utilForklift), utilWorker: avg((x) => x.utilWorker), queueForklift: avg((x) => x.queueForklift),
     };

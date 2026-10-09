@@ -1,0 +1,15 @@
+import { defaultScenario } from '../src/model/defaults';
+import { defaultLayoutParams, generateLayout } from '../src/model/layoutGen';
+import { runExperiment } from '../src/sim/runner';
+import { analyzeCapacity } from '../src/analysis/capacity';
+const sc = defaultScenario();
+const layout = generateLayout(defaultLayoutParams());
+const t0 = Date.now();
+const r = runExperiment(sc, layout);
+console.log('MC', sc.replications, 'reps', Date.now() - t0, 'ms');
+const k = r.kpis;
+const line = (n: string, v: any) => console.log(n.padEnd(22), v.mean.toFixed(3), '±', v.ci95.toFixed(3));
+for (const key of ['palletsInPerDay','palletsOutPerDay','ordersPerDay','utilForklift','utilWorker','utilDockIn','waitForkliftMean','waitForkliftP95','waitWorkerP95','dockWaitInP95','orderCycleMean','occupancyMean','occupancyMax','stockoutRate','backlogOrders','costPerPallet'] as const) line(key, k[key]);
+const cap = analyzeCapacity(sc, layout);
+for (const row of cap.rows) console.log(row.name, 'atual', row.current, 'nec', row.requiredAvg, row.requiredPeak, 'rho', row.rhoAvg.toFixed(2), row.rhoPeak.toFixed(2), 'wP95', row.waitP95MinPeak.toFixed(1));
+console.log(cap.storage, cap.travel);

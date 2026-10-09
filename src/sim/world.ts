@@ -187,9 +187,14 @@ export function buildWorld(layout: Layout, sc: Scenario, sharedNav?: Nav): World
       const bays = Math.max(1, e.bays ?? Math.round(e.length / 2.7));
       const levels = Math.max(1, e.levels ?? 4);
       const rows = e.rows ?? (e.width > 1.6 ? 2 : 1);
+      // pontos de acesso agrupados (~5 por rack): limita o nº de pares origem-destino distintos
+      // (cache de rotas) sem perda relevante de realismo (±1,5 vãos)
+      const groups = Math.min(bays, 5);
+      const gs = Math.ceil(bays / groups);
       const access: Pt[][] = [];
       for (let b = 0; b < bays; b++) {
-        const lx = -e.length / 2 + ((b + 0.5) * e.length) / bays;
+        const cb = Math.min(bays - 1, Math.floor(b / gs) * gs + Math.floor(gs / 2));
+        const lx = -e.length / 2 + ((cb + 0.5) * e.length) / bays;
         access.push([toWorld(e, lx, e.width / 2 + aisleOff), toWorld(e, lx, -(e.width / 2 + aisleOff))]);
       }
       return { idx, el: e, bays, levels, rows, capacity: bays * levels * rows, stock: 0, pickFace: !!e.pickFace, zone: 2 as 0 | 1 | 2, rank: 0, access };
