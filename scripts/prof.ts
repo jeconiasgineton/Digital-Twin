@@ -1,0 +1,10 @@
+import { defaultScenario } from '../src/model/defaults';
+import { defaultLayoutParams, generateLayout } from '../src/model/layoutGen';
+import { SimModel } from '../src/sim/model';
+const sc = defaultScenario(); sc.days = 5;
+const layout = generateLayout(defaultLayoutParams());
+const t0 = Date.now();
+const m = new SimModel(sc, layout, 1);
+console.log('build', Date.now() - t0);
+const r = m.runAll();
+console.log('run', Date.now() - t0, 'events', m.sim.events, 'util', r.kpis.utilForklift.toFixed(2), r.kpis.utilWorker.toFixed(2), 'grid', m.world.nav.grid.w, m.world.nav.grid.h, m.world.nav.grid.res);

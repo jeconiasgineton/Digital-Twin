@@ -1,0 +1,26 @@
+{
+  "name": "digital-twin-logistico",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Digital Twin logístico: planilha Excel -> simulação 3D + estatística + dimensionamento",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "template": "tsx scripts/make-template.ts"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9"
+  }
+}
