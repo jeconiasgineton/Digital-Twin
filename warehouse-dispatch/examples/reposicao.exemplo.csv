@@ -1,0 +1,4 @@
+task_id,origin_zone,destination_zone,equipment_type,priority
+R-1001,RES-A,SEP-A,pallet_jack,4
+R-1002,RES-A,SEP-B,forklift,5
+R-1003,REC,RES-A,pallet_jack,2

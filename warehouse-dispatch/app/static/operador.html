@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Operador · Reposição</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f5f4; --fg: #1c1917; --card: #ffffff; --muted: #57534e;
+      --accent: #1d4ed8; --danger: #b91c1c; --warn: #b45309;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #1c1917; --fg: #f5f5f4; --card: #292524; --muted: #a8a29e; --accent: #60a5fa; --danger: #f87171; --warn: #fbbf24; }
+    }
+    :root:not([data-theme="light"]) body { background: var(--bg); }
+    body {
+      margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+      font: 18px/1.4 system-ui, -apple-system, sans-serif;
+    }
+    .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    h2 { margin: 0 0 8px; font-size: 22px; }
+    p { margin: 6px 0; }
+    .muted { color: var(--muted); font-size: 16px; }
+    .warn { color: var(--warn); font-weight: 600; }
+    .error { color: var(--danger); font-weight: 600; }
+    label { display: block; margin-top: 12px; font-size: 16px; color: var(--muted); }
+    input, select {
+      display: block; width: 100%; box-sizing: border-box; margin-top: 6px;
+      font-size: 20px; padding: 12px; border-radius: 8px; border: 1px solid #a8a29e;
+      background: var(--card); color: var(--fg);
+    }
+    button {
+      display: block; width: 100%; box-sizing: border-box; margin-top: 12px;
+      font-size: 20px; padding: 14px; border-radius: 10px; border: 0;
+      background: var(--accent); color: #fff; font-weight: 600;
+    }
+    button.secondary { background: transparent; color: var(--danger); border: 2px solid var(--danger); }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="login" class="card hidden">
+    <h2>Início de turno</h2>
+    <label>Matrícula<input id="operatorId" autocomplete="off" inputmode="text"></label>
+    <label>Equipamento<input id="equipmentId" autocomplete="off"></label>
+    <label>Scan do local atual<input id="checkinScan" autocomplete="off"></label>
+    <button id="checkinBtn">Iniciar turno</button>
+    <p id="loginError" class="error"></p>
+  </div>
+
+  <div id="work" class="hidden">
+    <div id="status" class="card muted"></div>
+    <p id="message" class="error"></p>
+
+    <div id="offer" class="card hidden">
+      <h2>Nova tarefa</h2>
+      <p id="offerText"></p>
+      <p id="offerTimer" class="warn"></p>
+      <button id="acceptBtn">Aceitar</button>
+      <label>Motivo, se recusar
+        <select id="reason">
+          <option value="other">Outro</option>
+          <option value="equipment_problem">Problema no equipamento</option>
+          <option value="safety">Segurança</option>
+          <option value="already_busy">Já estou ocupado</option>
+        </select>
+      </label>
+      <button id="rejectBtn" class="secondary">Recusar</button>
+    </div>
+
+    <div id="task" class="card hidden">
+      <h2 id="taskTitle"></h2>
+      <p id="taskText"></p>
+      <div id="arriveForm">
+        <label>Scan do local de origem<input id="arriveScan" autocomplete="off"></label>
+        <button id="arriveBtn">Confirmar chegada na origem</button>
+      </div>
+      <div id="completeForm" class="hidden">
+        <label>Scan do local de destino<input id="completeScan" autocomplete="off"></label>
+        <button id="completeBtn">Confirmar entrega</button>
+      </div>
+    </div>
+
+    <div id="idle" class="card muted hidden">Aguardando nova tarefa.</div>
+    <button id="checkoutBtn" class="secondary">Encerrar turno</button>
+  </div>
+
+<script>
+  const STATE_KEY = "wd-operator";
+  const QUEUE_KEY = "wd-queue";
+  const POLL_MS = 2000;
+
+  const $ = (id) => document.getElementById(id);
+  const REASON_LABELS = {
+    other: "Outro", equipment_problem: "Problema no equipamento",
+    safety: "Segurança", already_busy: "Já estou ocupado",
+  };
+
+  // localStorage pode estar bloqueado (aba privada, política do coletor).
+  function readStorage(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch (_) { return fallback; }
+  }
+  function writeStorage(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* segue só em memória */ }
+  }
+
+  let state = readStorage(STATE_KEY, null);      // { operatorId, equipmentId }
+  let queue = readStorage(QUEUE_KEY, []);       // comandos aguardando envio
+  let current = { offer: null, task: null };
+  let online = true;
+
+  function setMessage(text) { $("message").textContent = text || ""; }
+
+  async function api(path, body) {
+    const response = await fetch(path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `Erro ${response.status}`);
+    return data;
+  }
+
+  // Ações do operador vão para a fila e são reenviadas até o servidor confirmar.
+  // O event_id torna o reenvio seguro: o servidor não repete a ação.
+  function enqueue(path, payload) {
+    queue.push({ path, payload: { event_id: crypto.randomUUID(), ...payload } });
+    writeStorage(QUEUE_KEY, queue);
+    return flush();
+  }
+
+  async function flush() {
+    while (queue.length > 0) {
+      const item = queue[0];
+      let response;
+      try {
+        response = await fetch(item.path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(item.payload),
+        });
+      } catch (_) {
+        online = false;
+        break;
+      }
+      online = true;
+      if (response.status >= 500) break;
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        setMessage(data.detail || "Ação recusada pelo sistema.");
+      }
+      queue.shift();
+      writeStorage(QUEUE_KEY, queue);
+    }
+    render();
+  }
+
+  async function refresh() {
+    if (!state) return;
+    try {
+      current = await api(`/operators/${encodeURIComponent(state.operatorId)}/current`);
+      online = true;
+    } catch (_) {
+      online = false;
+    }
+    await flush();
+  }
+
+  function describe(task) {
+    return `${task.origin_zone} → ${task.destination_zone} · prioridade ${task.priority} · ${task.equipment_type}`;
+  }
+
+  function render() {
+    $("login").classList.toggle("hidden", !!state);
+    $("work").classList.toggle("hidden", !state);
+    if (!state) return;
+
+    const pending = queue.length;
+    const link = online ? "conectado" : "sem conexão: ações ficam na fila";
+    $("status").textContent = `Operador ${state.operatorId} · ${state.equipmentId} · ${link}` +
+      (pending ? ` · ${pending} ação(ões) aguardando envio` : "");
+
+    const offer = current.offer;
+    const task = current.task;
+    $("offer").classList.toggle("hidden", !offer || !!task);
+    if (offer && !task) {
+      $("offerText").textContent = describe(offer);
+    }
+
+    $("task").classList.toggle("hidden", !task);
+    $("idle").classList.toggle("hidden", !!offer || !!task);
+    if (task) {
+      $("taskTitle").textContent = task.status === "in_progress" ? "Em entrega" : "Tarefa atribuída";
+      $("taskText").textContent = describe(task);
+      $("arriveForm").classList.toggle("hidden", task.status !== "assigned");
+      $("completeForm").classList.toggle("hidden", task.status !== "in_progress");
+    }
+    updateTimer();
+  }
+
+  function updateTimer() {
+    if (!current.offer || !current.offer.offer_expires_at) { $("offerTimer").textContent = ""; return; }
+    const seconds = Math.max(0, Math.round((new Date(current.offer.offer_expires_at) - Date.now()) / 1000));
+    $("offerTimer").textContent = `Responda em ${seconds}s, senão a tarefa segue para outro operador.`;
+  }
+
+  // Ações
+
+  $("checkinBtn").addEventListener("click", async () => {
+    $("loginError").textContent = "";
+    const operatorId = $("operatorId").value.trim();
+    const equipmentId = $("equipmentId").value.trim();
+    const scanCode = $("checkinScan").value.trim();
+    if (!operatorId || !equipmentId || !scanCode) { $("loginError").textContent = "Preencha os três campos."; return; }
+    try {
+      await api(`/operators/${encodeURIComponent(operatorId)}/checkin`, {
+        event_id: crypto.randomUUID(), equipment_id: equipmentId, scan_code: scanCode,
+      });
+      state = { operatorId, equipmentId };
+      writeStorage(STATE_KEY, state);
+      await refresh();
+    } catch (error) {
+      $("loginError").textContent = error.message;
+    }
+  });
+
+  $("acceptBtn").addEventListener("click", async () => {
+    setMessage("");
+    await enqueue(`/tasks/${current.offer.id}/accept`, { operator_id: state.operatorId });
+    await refresh();
+  });
+
+  $("rejectBtn").addEventListener("click", async () => {
+    setMessage("");
+    await enqueue(`/tasks/${current.offer.id}/reject`, {
+      operator_id: state.operatorId, reason: $("reason").value,
+    });
+    await refresh();
+  });
+
+  $("arriveBtn").addEventListener("click", async () => {
+    setMessage("");
+    const scanCode = $("arriveScan").value.trim();
+    if (!scanCode) { setMessage("Faça o scan do local de origem."); return; }
+    await enqueue(`/tasks/${current.task.id}/arrive`, { operator_id: state.operatorId, scan_code: scanCode });
+    $("arriveScan").value = "";
+    await refresh();
+  });
+
+  $("completeBtn").addEventListener("click", async () => {
+    setMessage("");
+    const scanCode = $("completeScan").value.trim();
+    if (!scanCode) { setMessage("Faça o scan do local de destino."); return; }
+    await enqueue(`/tasks/${current.task.id}/complete`, { operator_id: state.operatorId, scan_code: scanCode });
+    $("completeScan").value = "";
+    await refresh();
+  });
+
+  $("checkoutBtn").addEventListener("click", async () => {
+    setMessage("");
+    try {
+      await api(`/operators/${encodeURIComponent(state.operatorId)}/checkout`, { event_id: crypto.randomUUID() });
+      state = null;
+      writeStorage(STATE_KEY, null);
+      current = { offer: null, task: null };
+      render();
+    } catch (error) {
+      setMessage(error.message);
+    }
+  });
+
+  setInterval(refresh, POLL_MS);
+  setInterval(updateTimer, 1000);
+  refresh().then(render);
+</script>
+</body>
+</html>
