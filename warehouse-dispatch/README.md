@@ -20,6 +20,36 @@ Interface do operador: `http://localhost:8000/`
 Layout de exemplo: `config/layout.example.json`
 Planilha de exemplo: `examples/reposicao.exemplo.csv`
 
+## Cliente fictício: Armazém Demo
+
+Dados inventados para testar o sistema antes de um cliente real. Estão em `config/demo/`:
+
+- `layout.json`: 13 zonas (recebimento, corredores, reservas A a C, separações A a D, expedição e 2 docas) e 17 corredores com distâncias em metros.
+- `cadastro.json`: 9 equipamentos (3 empilhadeiras, 6 transpaleteiras), 12 operadores com habilitações variadas e um turno de 9 check-ins.
+  O operador `OP-05` tem NR-11 vencida e serve para testar a recusa de check-in.
+
+Simulação em tempo acelerado, sem servidor e sem relógio real:
+
+```bash
+./.venv/bin/python -m app.demo simulate --seed 42 --hours 2
+```
+
+O relatório traz tarefas por status, eventos, tempo de resposta e a divisão do tempo dos operadores entre ocioso,
+deslocamento vazio e trabalho. Mesmo seed, mesmo resultado.
+
+Carga em um servidor em execução (base limpa):
+
+```bash
+WD_LAYOUT=config/demo/layout.json WD_ADMIN_TOKEN=adm WD_INTEGRATION_TOKEN=int \
+  ./.venv/bin/uvicorn "app.api:create_app" --factory --port 8000
+
+./.venv/bin/python -m app.demo seed --url http://127.0.0.1:8000 \
+  --admin-token adm --integration-token int --tasks 30
+```
+
+A demanda de 90 tarefas por hora e a velocidade das máquinas (1,1 m/s e 1,6 m/s) são premissas da simulação,
+não medições. Qualquer conclusão sobre ociosidade precisa ser validada com dados reais do piloto.
+
 ## Regras de despacho
 
 - A atribuição é global por pares (tarefa, operador): primeiro a maior prioridade (5 = urgente), depois a menor distância,

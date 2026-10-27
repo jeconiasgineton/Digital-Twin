@@ -76,6 +76,9 @@ class Warehouse:
         self.events: list[dict[str, Any]] = []
         self._processed: dict[str, dict[str, Any]] = {}
 
+    def now(self) -> datetime:
+        return self._clock()
+
     # Cadastro
 
     @_persisted

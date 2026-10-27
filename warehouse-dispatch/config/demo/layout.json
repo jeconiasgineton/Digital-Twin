@@ -1,0 +1,36 @@
+{
+  "zones": [
+    {"id": "REC", "name": "Recebimento", "scan_codes": ["REC-01"]},
+    {"id": "CN", "name": "Corredor norte", "scan_codes": ["CN-01"]},
+    {"id": "CS", "name": "Corredor sul", "scan_codes": ["CS-01"]},
+    {"id": "RES-A", "name": "Reserva A", "scan_codes": ["RES-A-01"]},
+    {"id": "RES-B", "name": "Reserva B", "scan_codes": ["RES-B-01"]},
+    {"id": "RES-C", "name": "Reserva C", "scan_codes": ["RES-C-01"]},
+    {"id": "SEP-A", "name": "Separação A", "scan_codes": ["SEP-A-01"]},
+    {"id": "SEP-B", "name": "Separação B", "scan_codes": ["SEP-B-01"]},
+    {"id": "SEP-C", "name": "Separação C", "scan_codes": ["SEP-C-01"]},
+    {"id": "SEP-D", "name": "Separação D", "scan_codes": ["SEP-D-01"]},
+    {"id": "EXP", "name": "Expedição", "scan_codes": ["EXP-01"]},
+    {"id": "DOC-1", "name": "Doca 1", "scan_codes": ["DOC-1-01"]},
+    {"id": "DOC-2", "name": "Doca 2", "scan_codes": ["DOC-2-01"]}
+  ],
+  "edges": [
+    {"from": "REC", "to": "CN", "meters": 25},
+    {"from": "CN", "to": "RES-A", "meters": 20},
+    {"from": "RES-A", "to": "RES-B", "meters": 15},
+    {"from": "RES-B", "to": "RES-C", "meters": 15},
+    {"from": "RES-A", "to": "SEP-A", "meters": 30},
+    {"from": "RES-B", "to": "SEP-B", "meters": 30},
+    {"from": "RES-C", "to": "SEP-C", "meters": 30},
+    {"from": "SEP-A", "to": "SEP-B", "meters": 25},
+    {"from": "SEP-B", "to": "SEP-C", "meters": 25},
+    {"from": "SEP-C", "to": "SEP-D", "meters": 25},
+    {"from": "RES-C", "to": "CS", "meters": 20},
+    {"from": "CS", "to": "SEP-D", "meters": 30},
+    {"from": "CS", "to": "EXP", "meters": 40},
+    {"from": "EXP", "to": "DOC-1", "meters": 15},
+    {"from": "DOC-1", "to": "DOC-2", "meters": 15},
+    {"from": "DOC-2", "to": "CN", "meters": 60},
+    {"from": "REC", "to": "DOC-1", "meters": 35}
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "_aviso": "Dados fictícios para teste. Nenhum nome, matrícula ou equipamento representa pessoa ou cliente real.",
+  "equipment": [
+    {"id": "EM-01", "type": "forklift"},
+    {"id": "EM-02", "type": "forklift"},
+    {"id": "EM-03", "type": "forklift"},
+    {"id": "PT-01", "type": "pallet_jack"},
+    {"id": "PT-02", "type": "pallet_jack"},
+    {"id": "PT-03", "type": "pallet_jack"},
+    {"id": "PT-04", "type": "pallet_jack"},
+    {"id": "PT-05", "type": "pallet_jack"},
+    {"id": "PT-06", "type": "pallet_jack"}
+  ],
+  "operators": [
+    {"id": "OP-01", "name": "Operador Fictício 01", "certifications": {"forklift": "2027-06-30"}},
+    {"id": "OP-02", "name": "Operador Fictício 02", "certifications": {"forklift": "2027-06-30"}},
+    {"id": "OP-03", "name": "Operador Fictício 03", "certifications": {"forklift": "2027-06-30"}},
+    {"id": "OP-04", "name": "Operador Fictício 04", "certifications": {"forklift": "2026-11-15"}},
+    {"id": "OP-05", "name": "Operador Fictício 05", "certifications": {"forklift": "2026-06-30"}},
+    {"id": "OP-06", "name": "Operador Fictício 06", "certifications": {}},
+    {"id": "OP-07", "name": "Operador Fictício 07", "certifications": {}},
+    {"id": "OP-08", "name": "Operador Fictício 08", "certifications": {}},
+    {"id": "OP-09", "name": "Operador Fictício 09", "certifications": {}},
+    {"id": "OP-10", "name": "Operador Fictício 10", "certifications": {}},
+    {"id": "OP-11", "name": "Operador Fictício 11", "certifications": {}},
+    {"id": "OP-12", "name": "Operador Fictício 12", "certifications": {}}
+  ],
+  "shift": [
+    {"operator": "OP-01", "equipment": "EM-01", "scan_code": "CN-01"},
+    {"operator": "OP-02", "equipment": "EM-02", "scan_code": "SEP-C-01"},
+    {"operator": "OP-03", "equipment": "EM-03", "scan_code": "REC-01"},
+    {"operator": "OP-06", "equipment": "PT-01", "scan_code": "RES-A-01"},
+    {"operator": "OP-07", "equipment": "PT-02", "scan_code": "RES-B-01"},
+    {"operator": "OP-08", "equipment": "PT-03", "scan_code": "SEP-A-01"},
+    {"operator": "OP-09", "equipment": "PT-04", "scan_code": "SEP-D-01"},
+    {"operator": "OP-10", "equipment": "PT-05", "scan_code": "CS-01"},
+    {"operator": "OP-11", "equipment": "PT-06", "scan_code": "EXP-01"}
+  ]
+}
