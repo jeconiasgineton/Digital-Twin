@@ -11,6 +11,10 @@ class EquipmentType(str, Enum):
     FORKLIFT = "forklift"
 
 
+# Só empilhadeiras exigem habilitação NR-11. Transpaleteiras não exigem.
+CERTIFICATION_REQUIRED = frozenset({EquipmentType.FORKLIFT})
+
+
 class TaskStatus(str, Enum):
     PENDING = "pending"
     OFFERED = "offered"

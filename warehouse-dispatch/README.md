@@ -24,7 +24,7 @@ Planilha de exemplo: `examples/reposicao.exemplo.csv`
 
 - Tarefas são ordenadas por prioridade (5 = urgente) e depois pela data de criação.
 - Candidato elegível: operador com check-in, sem oferta nem tarefa ativa, com equipamento do tipo exigido,
-  habilitação válida para esse tipo e caminho no grafo até a origem.
+  habilitação válida quando o equipamento exige (empilhadeira, NR-11; transpaleteira não exige) e caminho no grafo até a origem.
 - Entre os elegíveis, vence o de menor distância até a origem.
 - A oferta expira em 20 s (configurável). Expirada ou recusada, a tarefa vai ao próximo elegível.
 - Quem recusou não recebe a mesma tarefa de novo. Se todos os elegíveis recusarem, o ciclo reabre após o tempo de espera.
@@ -76,6 +76,6 @@ sem aplicar a ação de novo. Isso permite que a fila do coletor reenvie após q
 - **Localização por scan.** Não há posição contínua. A zona muda apenas quando o operador escaneia.
 - **Sem otimização global.** O despacho é guloso por prioridade. Otimização em lote fica para a fase 3.
 - **Sem integração com WMS.** A entrada é por planilha. A API do WMS entra na fase 2.
-- **Habilitação cadastrada manualmente.** Não há leitura do RH ou do WMS.
+- **Habilitação cadastrada manualmente.** Não há leitura do RH ou do WMS. Vale só para empilhadeiras.
 - **Painel do supervisor com dados individuais.** `/supervisor/board` lista cada operador. A decisão de registro agregado
   (por equipe e zona) ainda não está implementada e precisa ser feita antes do piloto.

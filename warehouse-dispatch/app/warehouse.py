@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from .domain import (
+    CERTIFICATION_REQUIRED,
     Equipment,
     EquipmentType,
     Operator,
@@ -308,6 +309,8 @@ class Warehouse:
         return operator.offer_task_id is not None or operator.active_task_id is not None
 
     def _is_certified(self, operator: Operator, equipment_type: EquipmentType, now: datetime) -> bool:
+        if equipment_type not in CERTIFICATION_REQUIRED:
+            return True
         if equipment_type not in operator.certifications:
             return False
         expires_on = operator.certifications[equipment_type]

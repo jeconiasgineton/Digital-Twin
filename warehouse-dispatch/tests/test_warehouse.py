@@ -34,6 +34,15 @@ def test_operator_without_certification_never_receives_offer(warehouse):
     assert warehouse.tasks["T1"].status is TaskStatus.PENDING
 
 
+def test_pallet_jack_needs_no_certification(warehouse):
+    checkin_operator(warehouse, "ana", EquipmentType.PALLET_JACK, "SA-01", certifications={})
+    add_task(warehouse, "T1", equipment=EquipmentType.PALLET_JACK)
+
+    warehouse.tick()
+
+    assert warehouse.current("ana")[0].id == "T1"
+
+
 def test_expired_certification_blocks_checkin(warehouse, clock):
     warehouse.register_equipment("EQ-1", EquipmentType.FORKLIFT)
     warehouse.register_operator("diego", "Diego", {EquipmentType.FORKLIFT: date(2026, 10, 1)})
