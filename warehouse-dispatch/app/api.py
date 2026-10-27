@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -6,13 +7,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from .domain import EquipmentType, RejectReason, Task
+from .domain import MAX_PRIORITY, MIN_PRIORITY, EquipmentType, RejectReason, Task, TaskSpec
 from .importer import parse_tasks_csv
 from .layout import Layout
+from .store import SqliteStore
 from .warehouse import DispatchError, Warehouse
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -52,6 +54,18 @@ class OperatorIn(BaseModel):
     certifications: dict[EquipmentType, date | None] = {}
 
 
+class IntegrationTaskIn(BaseModel):
+    external_id: str = Field(min_length=1, max_length=100)
+    origin_zone: str = Field(min_length=1, max_length=50)
+    destination_zone: str = Field(min_length=1, max_length=50)
+    equipment_type: EquipmentType
+    priority: int = Field(ge=MIN_PRIORITY, le=MAX_PRIORITY)
+
+
+class IntegrationBatchIn(BaseModel):
+    tasks: list[IntegrationTaskIn] = Field(min_length=1, max_length=500)
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value else None
 
@@ -79,11 +93,27 @@ def create_app(
     offer_timeout_seconds: int = 20,
     clock: Callable[[], datetime] | None = None,
     run_ticker: bool = True,
+    db_path: str | None = None,
+    admin_token: str | None = None,
+    integration_token: str | None = None,
 ) -> FastAPI:
+    admin_token = admin_token if admin_token is not None else os.environ.get("WD_ADMIN_TOKEN")
+    integration_token = (
+        integration_token if integration_token is not None else os.environ.get("WD_INTEGRATION_TOKEN")
+    )
+    db_path = db_path if db_path is not None else os.environ.get("WD_DB")
+
     warehouse_kwargs: dict[str, Any] = {"offer_timeout": timedelta(seconds=offer_timeout_seconds)}
     if clock is not None:
         warehouse_kwargs["clock"] = clock
-    warehouse = Warehouse(layout or Layout.from_file(layout_path or DEFAULT_LAYOUT), **warehouse_kwargs)
+    store = SqliteStore(db_path) if db_path else None
+    warehouse = Warehouse(
+        layout or Layout.from_file(layout_path or DEFAULT_LAYOUT),
+        on_change=store.save if store else None,
+        **warehouse_kwargs,
+    )
+    if store is not None:
+        store.load_into(warehouse)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -91,31 +121,56 @@ def create_app(
         yield
         if ticker is not None:
             ticker.cancel()
+        if store is not None:
+            store.close()
 
-    app = FastAPI(title="Warehouse Dispatch", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Warehouse Dispatch", version="0.2.0", lifespan=lifespan)
     app.state.warehouse = warehouse
+
+    def _guard(header: str, expected: str | None) -> Callable[[Request], None]:
+        def check(request: Request) -> None:
+            supplied = request.headers.get(header, "")
+            # Sem token configurado, a rota fica fechada. Não existe acesso anônimo.
+            if not expected or not hmac.compare_digest(supplied, expected):
+                raise DispatchError("token inválido ou ausente", status_code=401)
+
+        return check
+
+    admin_only = Depends(_guard("X-Admin-Token", admin_token))
+    integration_only = Depends(_guard("X-Integration-Token", integration_token))
 
     @app.exception_handler(DispatchError)
     async def _handle_dispatch_error(_: Request, error: DispatchError) -> JSONResponse:
         return JSONResponse({"detail": str(error)}, status_code=error.status_code)
 
+    # Interface e PWA
+
     @app.get("/")
     def operator_page() -> FileResponse:
         return FileResponse(STATIC_DIR / "operador.html")
 
-    # Cadastro (sem autenticação nesta fase: restrito à rede interna do piloto)
+    @app.get("/manifest.webmanifest")
+    def manifest() -> FileResponse:
+        return FileResponse(STATIC_DIR / "manifest.webmanifest", media_type="application/manifest+json")
 
-    @app.post("/admin/equipment", status_code=201)
+    @app.get("/sw.js")
+    def service_worker() -> FileResponse:
+        # Na raiz para que o escopo do service worker cubra a aplicação inteira.
+        return FileResponse(STATIC_DIR / "sw.js", media_type="text/javascript")
+
+    # Administração (token X-Admin-Token)
+
+    @app.post("/admin/equipment", status_code=201, dependencies=[admin_only])
     def register_equipment(body: EquipmentIn) -> dict[str, str]:
         warehouse.register_equipment(body.id, body.type)
         return {"id": body.id, "type": body.type.value}
 
-    @app.post("/admin/operators", status_code=201)
+    @app.post("/admin/operators", status_code=201, dependencies=[admin_only])
     def register_operator(body: OperatorIn) -> dict[str, str]:
         warehouse.register_operator(body.id, body.name, body.certifications)
         return {"id": body.id, "name": body.name}
 
-    @app.post("/admin/tasks/import")
+    @app.post("/admin/tasks/import", dependencies=[admin_only])
     async def import_tasks(request: Request) -> JSONResponse:
         text = (await request.body()).decode("utf-8-sig")
         specs, issues = parse_tasks_csv(text, warehouse.layout)
@@ -124,6 +179,37 @@ def create_app(
             return JSONResponse({"created": 0, "errors": errors}, status_code=422)
         warehouse.add_tasks(specs)
         return JSONResponse({"created": len(specs), "errors": []}, status_code=201)
+
+    # Integração com WMS (token X-Integration-Token)
+
+    @app.post("/integrations/tasks", dependencies=[integration_only])
+    def ingest_tasks(body: IntegrationBatchIn) -> dict[str, Any]:
+        unknown = [
+            {"external_id": item.external_id, "message": f"zona desconhecida: {zone}"}
+            for item in body.tasks
+            for zone in (item.origin_zone, item.destination_zone)
+            if zone not in warehouse.layout.zones
+        ]
+        if unknown:
+            return JSONResponse({"detail": "zonas desconhecidas", "errors": unknown}, status_code=422)
+        specs = [
+            TaskSpec(
+                id=item.external_id,
+                origin_zone=item.origin_zone,
+                destination_zone=item.destination_zone,
+                equipment_type=item.equipment_type,
+                priority=item.priority,
+            )
+            for item in body.tasks
+        ]
+        return warehouse.ingest_tasks(specs)
+
+    @app.get("/integrations/events", dependencies=[integration_only])
+    def events(after: int = 0, limit: int = 200) -> dict[str, Any]:
+        limit = max(1, min(limit, 500))
+        batch = warehouse.events_after(max(after, 0), limit)
+        next_cursor = batch[-1]["seq"] if batch else max(after, 0)
+        return {"events": batch, "next": next_cursor}
 
     # Operador
 
@@ -174,31 +260,13 @@ def create_app(
             lambda: task_view(warehouse.complete(task_id, body.operator_id, body.scan_code)),
         )
 
-    # Supervisão e KPI
+    # Supervisão e KPI (token X-Admin-Token, sem identificar operadores)
 
-    @app.get("/supervisor/board")
-    def board() -> dict[str, Any]:
-        with warehouse.lock:
-            return {
-                "tasks": [task_view(task) for task in warehouse.tasks.values()],
-                "operators": [
-                    {
-                        "id": operator.id,
-                        "name": operator.name,
-                        "equipment_id": operator.equipment_id,
-                        "zone_id": operator.zone_id,
-                        "offer_task_id": operator.offer_task_id,
-                        "active_task_id": operator.active_task_id,
-                    }
-                    for operator in warehouse.operators.values()
-                ],
-                "equipment": [
-                    {"id": item.id, "type": item.type.value, "holder_id": item.holder_id}
-                    for item in warehouse.equipment.values()
-                ],
-            }
+    @app.get("/supervisor/zones", dependencies=[admin_only])
+    def zones() -> dict[str, Any]:
+        return {"zones": warehouse.zone_summary()}
 
-    @app.get("/kpi/response-time")
+    @app.get("/kpi/response-time", dependencies=[admin_only])
     def response_time() -> dict[str, Any]:
         return warehouse.response_summary()
 

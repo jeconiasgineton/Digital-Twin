@@ -22,7 +22,9 @@ Planilha de exemplo: `examples/reposicao.exemplo.csv`
 
 ## Regras de despacho
 
-- Tarefas são ordenadas por prioridade (5 = urgente) e depois pela data de criação.
+- A atribuição é global por pares (tarefa, operador): primeiro a maior prioridade (5 = urgente), depois a menor distância,
+  e cada operador recebe no máximo uma oferta por ciclo. Uma tarefa antiga e distante não tem preferência sobre uma nova e próxima
+  de mesma prioridade. Essa regra de envelhecimento está em aberto (pendência 0.8).
 - Candidato elegível: operador com check-in, sem oferta nem tarefa ativa, com equipamento do tipo exigido,
   habilitação válida quando o equipamento exige (empilhadeira, NR-11; transpaleteira não exige) e caminho no grafo até a origem.
 - Entre os elegíveis, vence o de menor distância até a origem.
@@ -46,17 +48,27 @@ da demora do deslocamento.
 
 ## Endpoints principais
 
-| Método | Caminho | Uso |
-|---|---|---|
-| POST | `/admin/equipment` | Cadastra equipamento |
-| POST | `/admin/operators` | Cadastra operador e habilitações |
-| POST | `/admin/tasks/import` | Importa CSV (tudo ou nada) |
-| POST | `/operators/{id}/checkin` | Início de turno com equipamento e scan de local |
-| POST | `/operators/{id}/checkout` | Fim de turno |
-| GET | `/operators/{id}/current` | Oferta e tarefa ativa do operador |
-| POST | `/tasks/{id}/accept` · `/reject` · `/arrive` · `/complete` | Ações do operador |
-| GET | `/supervisor/board` | Estado de tarefas, operadores e equipamentos |
-| GET | `/kpi/response-time` | Indicadores de tempo de resposta |
+| Método | Caminho | Autenticação | Uso |
+|---|---|---|---|
+| POST | `/admin/equipment` | `X-Admin-Token` | Cadastra equipamento |
+| POST | `/admin/operators` | `X-Admin-Token` | Cadastra operador e habilitações |
+| POST | `/admin/tasks/import` | `X-Admin-Token` | Importa CSV (tudo ou nada) |
+| POST | `/integrations/tasks` | `X-Integration-Token` | Entrada de tarefas do WMS (idempotente) |
+| GET | `/integrations/events?after=N` | `X-Integration-Token` | Feed de eventos de saída, com cursor |
+| POST | `/operators/{id}/checkin` | — (pendência 2.4) | Início de turno com equipamento e scan de local |
+| POST | `/operators/{id}/checkout` | — (pendência 2.4) | Fim de turno |
+| GET | `/operators/{id}/current` | — (pendência 2.4) | Oferta e tarefa ativa do operador |
+| POST | `/tasks/{id}/accept` · `/reject` · `/arrive` · `/complete` | — (pendência 2.4) | Ações do operador |
+| GET | `/supervisor/zones` | `X-Admin-Token` | Visão agregada por zona, sem operadores |
+| GET | `/kpi/response-time` | `X-Admin-Token` | Indicadores de tempo de resposta |
+
+Configuração por variáveis de ambiente:
+
+- `WD_LAYOUT`: arquivo de layout do armazém.
+- `WD_DB`: caminho do SQLite. Sem ele, o estado fica só em memória.
+- `WD_ADMIN_TOKEN` e `WD_INTEGRATION_TOKEN`: sem eles, as rotas protegidas recusam todo acesso.
+
+Eventos gerados: `task.offered`, `task.accepted`, `task.rejected`, `task.expired`, `task.arrived`, `task.completed`.
 
 Todo comando de operador exige `event_id`. Reenvios com o mesmo `event_id` devolvem o resultado original,
 sem aplicar a ação de novo. Isso permite que a fila do coletor reenvie após queda de conexão.
@@ -67,15 +79,13 @@ sem aplicar a ação de novo. Isso permite que a fila do coletor reenvie após q
 - Ações entram numa fila local (`localStorage`) e são reenviadas até o servidor confirmar.
 - Quando há conexão, a atualização ocorre a cada 2 s.
 
-## Limites conhecidos desta fase
+## Limites conhecidos
 
-- **Estado em memória.** Reiniciar o servidor perde tarefas e turnos. Persistência fica para a próxima entrega.
-- **Sem autenticação.** Os endpoints `/admin/*` e os de operador estão abertos. Só usar em rede interna
-  do piloto, com acesso restrito, até existir login por matrícula.
-- **Sem APK.** A interface é web (PWA). O empacotamento como APK Android é um passo separado.
-- **Localização por scan.** Não há posição contínua. A zona muda apenas quando o operador escaneia.
-- **Sem otimização global.** O despacho é guloso por prioridade. Otimização em lote fica para a fase 3.
-- **Sem integração com WMS.** A entrada é por planilha. A API do WMS entra na fase 2.
-- **Habilitação cadastrada manualmente.** Não há leitura do RH ou do WMS. Vale só para empilhadeiras.
-- **Painel do supervisor com dados individuais.** `/supervisor/board` lista cada operador. A decisão de registro agregado
-  (por equipe e zona) ainda não está implementada e precisa ser feita antes do piloto.
+Todas as pendências estão em `PENDENCIAS.md`, com dono e o que desbloqueia cada uma.
+
+- **Operador sem login.** Os endpoints de operador ainda não exigem identificação (pendência 2.4).
+- **Localização por scan.** Não há posição contínua (fase 4).
+- **Persistência em snapshot.** O estado inteiro é gravado numa linha do SQLite a cada mudança (pendência 2.8).
+- **Sem APK.** A interface é PWA instalável. O empacotamento Android está na pendência A.2.
+- **Sem batching.** Uma tarefa por operador por vez (fase 3).
+- **Habilitação cadastrada manualmente.** Vale só para empilhadeiras, pois transpaleteira não exige NR-11.

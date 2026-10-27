@@ -1,3 +1,4 @@
+import functools
 import math
 import statistics
 import threading
@@ -39,6 +40,20 @@ def _mean(values: list[float]) -> float | None:
     return statistics.fmean(values) if values else None
 
 
+def _persisted(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Comando de escrita: ao final, salva o estado mesmo se a regra recusar a operação."""
+
+    @functools.wraps(method)
+    def wrapper(self: "Warehouse", *args: Any, **kwargs: Any) -> Any:
+        with self.lock:
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                self._commit(force=True)
+
+    return wrapper
+
+
 class Warehouse:
     """Estado e regras do despacho. Toda operação acontece sob self.lock."""
 
@@ -47,93 +62,115 @@ class Warehouse:
         layout: Layout,
         offer_timeout: timedelta = timedelta(seconds=20),
         clock: Callable[[], datetime] = _utc_now,
+        on_change: Callable[["Warehouse"], None] | None = None,
     ):
         self.layout = layout
         self.offer_timeout = offer_timeout
         self._clock = clock
+        self._on_change = on_change
+        self._changed = False
         self.lock = threading.RLock()
         self.operators: dict[str, Operator] = {}
         self.equipment: dict[str, Equipment] = {}
         self.tasks: dict[str, Task] = {}
+        self.events: list[dict[str, Any]] = []
         self._processed: dict[str, dict[str, Any]] = {}
 
     # Cadastro
 
+    @_persisted
     def register_equipment(self, equipment_id: str, equipment_type: EquipmentType) -> None:
-        with self.lock:
-            if equipment_id in self.equipment:
-                raise DispatchError(f"equipamento já cadastrado: {equipment_id}")
-            self.equipment[equipment_id] = Equipment(equipment_id, equipment_type)
+        if equipment_id in self.equipment:
+            raise DispatchError(f"equipamento já cadastrado: {equipment_id}")
+        self.equipment[equipment_id] = Equipment(equipment_id, equipment_type)
 
+    @_persisted
     def register_operator(
         self,
         operator_id: str,
         name: str,
         certifications: dict[EquipmentType, date | None],
     ) -> None:
-        with self.lock:
-            if operator_id in self.operators:
-                raise DispatchError(f"operador já cadastrado: {operator_id}")
-            self.operators[operator_id] = Operator(operator_id, name, dict(certifications))
+        if operator_id in self.operators:
+            raise DispatchError(f"operador já cadastrado: {operator_id}")
+        self.operators[operator_id] = Operator(operator_id, name, dict(certifications))
 
+    @_persisted
     def add_tasks(self, specs: list[TaskSpec]) -> None:
-        with self.lock:
-            duplicated = sorted(spec.id for spec in specs if spec.id in self.tasks)
-            if duplicated:
-                raise DispatchError(f"tarefas já existentes: {', '.join(duplicated)}")
-            now = self._clock()
-            for spec in specs:
-                self.tasks[spec.id] = Task(
-                    id=spec.id,
-                    origin_zone=spec.origin_zone,
-                    destination_zone=spec.destination_zone,
-                    equipment_type=spec.equipment_type,
-                    priority=spec.priority,
-                    created_at=now,
-                )
+        """Importação estrita: qualquer id repetido recusa o lote inteiro."""
+        duplicated = sorted(spec.id for spec in specs if spec.id in self.tasks)
+        if duplicated:
+            raise DispatchError(f"tarefas já existentes: {', '.join(duplicated)}")
+        for spec in specs:
+            self._create_task(spec)
+
+    @_persisted
+    def ingest_tasks(self, specs: list[TaskSpec]) -> dict[str, list[str]]:
+        """Entrada de integração: reenvio idêntico é ignorado; conteúdo diferente recusa o lote."""
+        conflicts: set[str] = set()
+        created: list[TaskSpec] = []
+        skipped: list[str] = []
+        seen: dict[str, TaskSpec] = {}
+        for spec in specs:
+            known = seen.get(spec.id) or self.tasks.get(spec.id)
+            if known is None:
+                seen[spec.id] = spec
+                created.append(spec)
+            elif self._same_content(known, spec):
+                skipped.append(spec.id)
+            else:
+                conflicts.add(spec.id)
+        if conflicts:
+            raise DispatchError(
+                f"tarefas com conteúdo diferente do já recebido: {', '.join(sorted(conflicts))}"
+            )
+        for spec in created:
+            self._create_task(spec)
+        return {"created": [spec.id for spec in created], "skipped": skipped}
 
     # Idempotência para comandos vindos de coletores com conexão instável
 
+    @_persisted
     def once(self, event_id: str, command: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         """Executa o comando uma vez por event_id. Repetições devolvem o resultado original."""
-        with self.lock:
-            if event_id not in self._processed:
-                self._processed[event_id] = command()
-            return self._processed[event_id]
+        if event_id not in self._processed:
+            self._processed[event_id] = command()
+        return self._processed[event_id]
 
     # Operador e equipamento
 
+    @_persisted
     def checkin(self, operator_id: str, equipment_id: str, scan_code: str) -> dict[str, str]:
-        with self.lock:
-            operator = self._operator(operator_id)
-            equipment = self._equipment(equipment_id)
-            zone_id = self._zone_for_scan(scan_code)
-            now = self._clock()
-            if operator.equipment_id is not None:
-                raise DispatchError("operador já está com um equipamento")
-            if equipment.holder_id is not None:
-                raise DispatchError("equipamento já está em uso")
-            if not self._is_certified(operator, equipment.type, now):
-                raise DispatchError(f"operador sem habilitação válida para {equipment.type.value}")
-            equipment.holder_id = operator.id
-            operator.equipment_id = equipment.id
-            operator.zone_id = zone_id
-            return {"operator_id": operator.id, "equipment_id": equipment.id, "zone_id": zone_id}
+        operator = self._operator(operator_id)
+        equipment = self._equipment(equipment_id)
+        zone_id = self._zone_for_scan(scan_code)
+        now = self._clock()
+        if operator.equipment_id is not None:
+            raise DispatchError("operador já está com um equipamento")
+        if equipment.holder_id is not None:
+            raise DispatchError("equipamento já está em uso")
+        if not self._is_certified(operator, equipment.type, now):
+            raise DispatchError(f"operador sem habilitação válida para {equipment.type.value}")
+        equipment.holder_id = operator.id
+        operator.equipment_id = equipment.id
+        operator.zone_id = zone_id
+        return {"operator_id": operator.id, "equipment_id": equipment.id, "zone_id": zone_id}
 
+    @_persisted
     def checkout(self, operator_id: str) -> dict[str, str]:
-        with self.lock:
-            operator = self._operator(operator_id)
-            if self._is_busy(operator):
-                raise DispatchError("finalize a tarefa atual antes de encerrar o turno")
-            if operator.equipment_id is not None:
-                self.equipment[operator.equipment_id].holder_id = None
-                operator.equipment_id = None
-            return {"operator_id": operator.id, "status": "checked_out"}
+        operator = self._operator(operator_id)
+        if self._is_busy(operator):
+            raise DispatchError("finalize a tarefa atual antes de encerrar o turno")
+        if operator.equipment_id is not None:
+            self.equipment[operator.equipment_id].holder_id = None
+            operator.equipment_id = None
+        return {"operator_id": operator.id, "status": "checked_out"}
 
     def current(self, operator_id: str) -> tuple[Task | None, Task | None]:
         """Oferta pendente e tarefa ativa do operador, com expirações já aplicadas."""
         with self.lock:
             self._expire_offers(self._clock())
+            self._commit()
             operator = self._operator(operator_id)
             offer = self.tasks[operator.offer_task_id] if operator.offer_task_id else None
             active = self.tasks[operator.active_task_id] if operator.active_task_id else None
@@ -141,59 +178,62 @@ class Warehouse:
 
     # Ciclo de vida da tarefa
 
+    @_persisted
     def accept(self, task_id: str, operator_id: str) -> Task:
-        with self.lock:
-            now = self._clock()
-            task = self._task(task_id)
-            operator = self._operator(operator_id)
-            self._require_offer(task, operator, now)
-            task.status = TaskStatus.ASSIGNED
-            task.assigned_operator_id = operator.id
-            task.accepted_at = now
-            task.offer_operator_id = None
-            task.offer_expires_at = None
-            operator.offer_task_id = None
-            operator.active_task_id = task.id
-            return task
+        now = self._clock()
+        task = self._task(task_id)
+        operator = self._operator(operator_id)
+        self._require_offer(task, operator, now)
+        task.status = TaskStatus.ASSIGNED
+        task.assigned_operator_id = operator.id
+        task.accepted_at = now
+        task.offer_operator_id = None
+        task.offer_expires_at = None
+        operator.offer_task_id = None
+        operator.active_task_id = task.id
+        self._record("task.accepted", task, operator.id, now)
+        return task
 
+    @_persisted
     def reject(self, task_id: str, operator_id: str, reason: RejectReason) -> Task:
-        with self.lock:
-            now = self._clock()
-            task = self._task(task_id)
-            operator = self._operator(operator_id)
-            self._require_offer(task, operator, now)
-            self._release_offer(task, now, reason)
-            return task
+        now = self._clock()
+        task = self._task(task_id)
+        operator = self._operator(operator_id)
+        self._require_offer(task, operator, now)
+        self._release_offer(task, now, reason)
+        return task
 
+    @_persisted
     def arrive(self, task_id: str, operator_id: str, scan_code: str) -> Task:
         """Chegada na origem. Este instante é o fim do tempo de resposta à chamada."""
-        with self.lock:
-            now = self._clock()
-            task = self._task(task_id)
-            operator = self._operator(operator_id)
-            self._assigned_task(task, operator)
-            if task.status is TaskStatus.IN_PROGRESS:
-                raise DispatchError("chegada já confirmada")
-            self._expect_scan(scan_code, task.origin_zone)
-            task.status = TaskStatus.IN_PROGRESS
-            task.arrived_at = now
-            operator.zone_id = task.origin_zone
-            return task
+        now = self._clock()
+        task = self._task(task_id)
+        operator = self._operator(operator_id)
+        self._assigned_task(task, operator)
+        if task.status is TaskStatus.IN_PROGRESS:
+            raise DispatchError("chegada já confirmada")
+        self._expect_scan(scan_code, task.origin_zone)
+        task.status = TaskStatus.IN_PROGRESS
+        task.arrived_at = now
+        operator.zone_id = task.origin_zone
+        self._record("task.arrived", task, operator.id, now)
+        return task
 
+    @_persisted
     def complete(self, task_id: str, operator_id: str, scan_code: str) -> Task:
-        with self.lock:
-            now = self._clock()
-            task = self._task(task_id)
-            operator = self._operator(operator_id)
-            self._assigned_task(task, operator)
-            if task.status is TaskStatus.ASSIGNED:
-                raise DispatchError("confirme a chegada na origem antes da entrega")
-            self._expect_scan(scan_code, task.destination_zone)
-            task.status = TaskStatus.COMPLETED
-            task.completed_at = now
-            operator.active_task_id = None
-            operator.zone_id = task.destination_zone
-            return task
+        now = self._clock()
+        task = self._task(task_id)
+        operator = self._operator(operator_id)
+        self._assigned_task(task, operator)
+        if task.status is TaskStatus.ASSIGNED:
+            raise DispatchError("confirme a chegada na origem antes da entrega")
+        self._expect_scan(scan_code, task.destination_zone)
+        task.status = TaskStatus.COMPLETED
+        task.completed_at = now
+        operator.active_task_id = None
+        operator.zone_id = task.destination_zone
+        self._record("task.completed", task, operator.id, now)
+        return task
 
     # Despacho
 
@@ -203,6 +243,12 @@ class Warehouse:
             now = self._clock()
             self._expire_offers(now)
             self._dispatch(now)
+            self._commit()
+
+    def events_after(self, after: int, limit: int) -> list[dict[str, Any]]:
+        """Feed de eventos de saída, em ordem de seq, para integrações puxarem por cursor."""
+        with self.lock:
+            return self.events[after:after + limit]
 
     def response_summary(self) -> dict[str, Any]:
         """Tempo de resposta = criação da chamada até a chegada confirmada na origem."""
@@ -224,27 +270,67 @@ class Warehouse:
                 "median_accept_seconds": _median(accept),
             }
 
+    def zone_summary(self) -> list[dict[str, Any]]:
+        """Visão agregada por zona, sem identificar operadores (decisão de LGPD)."""
+        with self.lock:
+            now = self._clock()
+            summary = []
+            for zone in self.layout.zones.values():
+                pending = [
+                    task for task in self.tasks.values()
+                    if task.status is TaskStatus.PENDING and task.origin_zone == zone.id
+                ]
+                in_zone = [op for op in self.operators.values() if op.zone_id == zone.id and op.equipment_id]
+                free = [op for op in in_zone if self._is_free(op)]
+                summary.append({
+                    "zone_id": zone.id,
+                    "name": zone.name,
+                    "pending_tasks": len(pending),
+                    "oldest_pending_seconds": max(
+                        ((now - task.created_at).total_seconds() for task in pending), default=None
+                    ),
+                    "offered_tasks": sum(
+                        1 for task in self.tasks.values()
+                        if task.status is TaskStatus.OFFERED and task.origin_zone == zone.id
+                    ),
+                    "operators_on_shift": len(in_zone),
+                    "operators_free": len(free),
+                })
+            return summary
+
     def _dispatch(self, now: datetime) -> None:
-        pending = sorted(
-            (
-                task
-                for task in self.tasks.values()
-                if task.status is TaskStatus.PENDING and (task.retry_after is None or task.retry_after <= now)
-            ),
-            key=lambda task: (-task.priority, task.created_at, task.id),
-        )
+        """Atribuição global: pares (tarefa, operador) por prioridade e depois por distância."""
+        pending = [
+            task
+            for task in self.tasks.values()
+            if task.status is TaskStatus.PENDING and (task.retry_after is None or task.retry_after <= now)
+        ]
+        pairs: list[tuple[int, float, datetime, str, str]] = []
+        with_candidates: set[str] = set()
         for task in pending:
-            operator = self._best_candidate(task, now)
-            if operator is not None:
-                self._offer(task, operator, now)
-            elif task.rejected_by:
+            for distance, operator in self._candidates(task, now):
+                pairs.append((-task.priority, distance, task.created_at, task.id, operator.id))
+                with_candidates.add(task.id)
+        pairs.sort()
+
+        offered_tasks: set[str] = set()
+        used_operators: set[str] = set()
+        for _, _, _, task_id, operator_id in pairs:
+            if task_id in offered_tasks or operator_id in used_operators:
+                continue
+            self._offer(self.tasks[task_id], self.operators[operator_id], now)
+            offered_tasks.add(task_id)
+            used_operators.add(operator_id)
+
+        for task in pending:
+            if task.status is TaskStatus.PENDING and task.id not in with_candidates and task.rejected_by:
                 # Todos os elegíveis recusaram: reabre o ciclo após um intervalo de espera.
                 task.rejected_by.clear()
                 task.retry_after = now + self.offer_timeout
+                self._changed = True
 
-    def _best_candidate(self, task: Task, now: datetime) -> Operator | None:
-        best: tuple[float, str] | None = None
-        best_operator: Operator | None = None
+    def _candidates(self, task: Task, now: datetime) -> list[tuple[float, Operator]]:
+        result: list[tuple[float, Operator]] = []
         for operator in self.operators.values():
             if not self._is_free(operator) or operator.id in task.rejected_by:
                 continue
@@ -252,19 +338,16 @@ class Warehouse:
             if equipment.type is not task.equipment_type or not self._is_certified(operator, equipment.type, now):
                 continue
             distance = self.layout.distance(operator.zone_id, task.origin_zone)
-            if math.isinf(distance):
-                continue
-            candidate = (distance, operator.id)
-            if best is None or candidate < best:
-                best = candidate
-                best_operator = operator
-        return best_operator
+            if not math.isinf(distance):
+                result.append((distance, operator))
+        return result
 
     def _offer(self, task: Task, operator: Operator, now: datetime) -> None:
         task.status = TaskStatus.OFFERED
         task.offer_operator_id = operator.id
         task.offer_expires_at = now + self.offer_timeout
         operator.offer_task_id = task.id
+        self._record("task.offered", task, operator.id, now)
 
     def _release_offer(self, task: Task, now: datetime, reason: RejectReason | None) -> None:
         operator = self.operators[task.offer_operator_id]
@@ -274,6 +357,8 @@ class Warehouse:
         task.offer_operator_id = None
         task.offer_expires_at = None
         task.status = TaskStatus.PENDING
+        event_type = "task.expired" if reason is None else "task.rejected"
+        self._record(event_type, task, operator.id, now)
 
     def _expire_offers(self, now: datetime) -> None:
         for task in self.tasks.values():
@@ -295,6 +380,40 @@ class Warehouse:
         zone_id = self._zone_for_scan(scan_code)
         if zone_id != expected_zone:
             raise DispatchError(f"local escaneado ({zone_id}) não é o esperado ({expected_zone})")
+
+    def _create_task(self, spec: TaskSpec) -> None:
+        self.tasks[spec.id] = Task(
+            id=spec.id,
+            origin_zone=spec.origin_zone,
+            destination_zone=spec.destination_zone,
+            equipment_type=spec.equipment_type,
+            priority=spec.priority,
+            created_at=self._clock(),
+        )
+
+    @staticmethod
+    def _same_content(task: Task, spec: TaskSpec) -> bool:
+        return (
+            task.origin_zone == spec.origin_zone
+            and task.destination_zone == spec.destination_zone
+            and task.equipment_type is spec.equipment_type
+            and task.priority == spec.priority
+        )
+
+    def _record(self, event_type: str, task: Task, operator_id: str | None, now: datetime) -> None:
+        self.events.append({
+            "seq": len(self.events) + 1,
+            "type": event_type,
+            "task_id": task.id,
+            "operator_id": operator_id,
+            "at": now.isoformat(),
+        })
+        self._changed = True
+
+    def _commit(self, force: bool = False) -> None:
+        if self._on_change is not None and (force or self._changed):
+            self._on_change(self)
+        self._changed = False
 
     # Regras auxiliares
 

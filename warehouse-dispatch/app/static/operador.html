@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Operador · Reposição</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#1d4ed8">
   <style>
     :root {
       color-scheme: light dark;
@@ -274,6 +276,10 @@
   setInterval(refresh, POLL_MS);
   setInterval(updateTimer, 1000);
   refresh().then(render);
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => { /* sem PWA, a página segue funcionando */ });
+  }
 </script>
 </body>
 </html>
