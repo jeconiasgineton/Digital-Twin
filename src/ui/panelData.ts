@@ -337,6 +337,24 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
         h('b', null, 'Palete e rota'),
         numField('Caixas por palete – limite médio', () => sc.picking.palletLimit.mean, (v) => ((sc.picking.palletLimit.mean = Math.max(1, v)), ch()), { step: 5, min: 1, title: 'Ao atingir o limite, o operador leva o palete ao stage de expedição' }),
         numField('… desvio', () => sc.picking.palletLimit.sd, (v) => ((sc.picking.palletLimit.sd = Math.max(0, v)), ch()), { step: 1, min: 0 }),
+        selField('Área de picking (de onde coletar)', () => sc.picking.area.mode, (v) => ((sc.picking.area.mode = v), ch(), ctx.rerender()), [
+          ['floor', 'Todos os endereços próximos ao chão (padrão)'], ['faces', 'Só os racks marcados como "face de picking"'], ['custom', 'Posições específicas (lista de endereços)'],
+        ]),
+        ...(sc.picking.area.mode !== 'custom' ? [numField('Níveis a partir do chão', () => sc.picking.area.levels, (v) => ((sc.picking.area.levels = Math.max(1, Math.round(v))), ch()), { step: 1, min: 1, max: 12, title: '1 = só o nível mais baixo' })] : []),
+        ...(sc.picking.area.mode === 'custom' ? [
+          h('label', { class: 'f', style: { gridTemplateColumns: '1fr' } }, h('span', null, 'Endereços da área de picking (ex.: A011, A012, B021)'),
+            h('textarea', { rows: '3', style: { width: '100%', background: 'var(--bg3)', color: 'var(--tx)', border: '1px solid var(--line)', borderRadius: '5px', padding: '5px' }, value: sc.picking.area.addresses.join(', '),
+              onchange: (ev: Event) => { sc.picking.area.addresses = parseAddresses((ev.target as HTMLTextAreaElement).value); (ev.target as HTMLTextAreaElement).value = sc.picking.area.addresses.join(', '); ch(); ctx.rerender(); } })),
+          (() => {
+            let ok = 0;
+            try {
+              const w = buildWorld(ctx.layout, sc);
+              const set = new Set(sc.picking.area.addresses);
+              for (const r of w.racks) for (let i = 0; i < r.slots.length; i++) if (set.has(slotLabel(r, i))) ok++;
+            } catch { /* layout incompleto */ }
+            return h('p', { class: 'note' }, `${ok} de ${sc.picking.area.addresses.length} endereço(s) existem no layout.${ok === 0 ? ' Sem nenhum válido, a coleta usa o chão de todos os racks.' : ''} As curvas A, B e C dentro da área seguem a proximidade das docas (20% / 30% / 50%).`);
+          })(),
+        ] : [h('p', { class: 'note' }, 'As curvas A, B e C seguem a proximidade das docas: 20% das posições mais próximas são A, as 30% seguintes B e o restante C.')]),
         selField('Rota de separação', () => sc.picking.route, (v) => ((sc.picking.route = v as PickRoute), ch()), (Object.keys(ROUTE_LABEL) as PickRoute[]).map((k) => [k, ROUTE_LABEL[k]] as [PickRoute, string])),
         numField('Separadores por pedido', () => sc.picking.pickersPerOrder, (v) => ((sc.picking.pickersPerOrder = Math.max(1, Math.round(v))), ch()), { step: 1, min: 1, title: 'O pedido é dividido por ruas entre os separadores (ex.: 100 caixas com 3 separadores)' }),
         h('b', null, 'Tempos por movimento (s)'),

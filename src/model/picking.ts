@@ -17,6 +17,11 @@ export interface PickingSpec {
   abc: { a: number; b: number; c: number };
   /** limite de caixas por palete de separação (média e desvio; cada palete sorteia o seu) */
   palletLimit: { mean: number; sd: number };
+  /**
+   * Área de picking (de onde as caixas são coletadas): todos os endereços próximos ao chão (padrão),
+   * só as faces de picking marcadas nos racks, ou posições específicas definidas pelo usuário.
+   */
+  area: { mode: 'floor' | 'faces' | 'custom'; /** níveis a partir do chão (floor/faces) */ levels: number; /** endereços (custom) */ addresses: string[] };
   route: PickRoute;
   /** separadores por pedido (o pedido é dividido por ruas) */
   pickersPerOrder: number;
@@ -47,6 +52,7 @@ export const defaultPicking = (): PickingSpec => ({
   boxesPerOrder: { mean: 24, sd: 12 },
   abc: { a: 0.7, b: 0.2, c: 0.1 },
   palletLimit: { mean: 60, sd: 8 },
+  area: { mode: 'floor', levels: 1, addresses: [] },
   route: 'u',
   pickersPerOrder: 1,
   scan: { kind: 'constant', a: 3 },

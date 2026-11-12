@@ -131,6 +131,8 @@ export class SimModel {
   private pickStockouts = 0;
   private pickStockoutSec = 0;
   private rngPick: Rng;
+  /** endereços da área de picking personalizada que não existem no layout */
+  unmatchedPickAddresses = 0;
 
   constructor(readonly sc: Scenario, layout: Layout, seed: number, readonly tracer?: Tracer, world?: World) {
     const root = new Rng(seed);
@@ -852,25 +854,44 @@ export class SimModel {
       this.aisleInfo.set(code, { code, lo: toWorld(a.el, -a.el.length / 2, 0), hi: toWorld(a.el, a.el.length / 2, 0) });
     }
     this.emptyAddr = new Set(this.sc.picking.stockout.addresses);
-    this.pickBands.forEach((rackList, cls) => {
-      for (const r of rackList) {
+    // candidatos da área de picking
+    const area = this.sc.picking.area;
+    const custom = new Set(area.addresses);
+    const floorLevels = Math.max(1, Math.round(area.levels));
+    const cand: (PickPos & { rank: number })[] = [];
+    const found = new Set<string>();
+    // sem nenhum endereço válido na área escolhida, cai para o chão de todos os racks (a simulação nunca fica sem onde coletar)
+    for (const mode of [area.mode, 'floor'] as const) {
+      const racks = mode === 'faces' ? w.pickRacks : w.racks;
+      for (const r of racks) {
         for (let row = 0; row < r.rows; row++) {
           for (let bay = 0; bay < r.bays; bay++) {
-            const idx = (row * r.bays + bay) * r.levels; // nível 0
-            const side = slotSide(r, idx);
-            const aisle = r.faceAisle[side] ?? '?';
-            const pt = r.access[bay][side];
-            const info = this.aisleInfo.get(aisle);
-            const el = w.aisles.find((x) => (x.aisle ?? x.el.name) === aisle)?.el;
-            const axis = el ? toLocal(el, pt).x : pt.x;
-            const sideLR: 0 | 1 = el && toLocal(el, pt).z < 0 ? 1 : 0;
-            void info;
-            this.pickPos[cls].push({ label: slotLabel(r, idx), aisle, axis, side: sideLR, pt });
+            for (let lv = 0; lv < (mode === 'custom' ? r.levels : Math.min(floorLevels, r.levels)); lv++) {
+              const idx = (row * r.bays + bay) * r.levels + lv;
+              const label = slotLabel(r, idx);
+              if (mode === 'custom') {
+                if (!custom.has(label)) continue;
+                found.add(label);
+              }
+              const side = slotSide(r, idx);
+              const aisle = r.faceAisle[side] ?? '?';
+              const pt = r.access[bay][side];
+              const el = w.aisles.find((x) => (x.aisle ?? x.el.name) === aisle)?.el;
+              const axis = el ? toLocal(el, pt).x : pt.x;
+              const sideLR: 0 | 1 = el && toLocal(el, pt).z < 0 ? 1 : 0;
+              cand.push({ label, aisle, axis, side: sideLR, pt, rank: r.rank });
+            }
           }
         }
       }
-    });
-    for (const list of this.pickPos) if (!list.length) list.push(...this.pickPos.flat());
+      if (cand.length) break;
+    }
+    this.unmatchedPickAddresses = area.mode === 'custom' ? [...custom].filter((a) => !found.has(a)).length : 0;
+    // curvas pela proximidade das docas: A = 20% mais próximos, B = 30% seguintes, C = o restante
+    cand.sort((a, b) => a.rank - b.rank);
+    const n = cand.length;
+    cand.forEach((p, i) => this.pickPos[i < n * 0.2 ? 0 : i < n * 0.5 ? 1 : 2].push(p));
+    for (let k = 0; k < 3; k++) if (!this.pickPos[k].length) this.pickPos[k] = cand.length ? [...cand] : [];
   }
 
   /** ponto do stage de expedição (ou, na falta, a doca de saída / ponto base) */

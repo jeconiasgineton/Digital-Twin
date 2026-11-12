@@ -272,6 +272,11 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
       if (kinds.length) sc.storage.step1With = kinds;
       else warn('armazenagem_etapa1_equipamentos: use paleteira_manual, transpaleteira e/ou amr.');
     }
+    const am = norm(g('picking_area_modo'));
+    if (am) sc.picking.area.mode = am.startsWith('perso') || am.startsWith('custom') ? 'custom' : am.startsWith('face') ? 'faces' : 'floor';
+    setN('picking_area_niveis', (v) => (sc.picking.area.levels = Math.max(1, Math.round(v))));
+    const aa = g('picking_area_enderecos');
+    if (aa !== undefined && aa !== null) sc.picking.area.addresses = parseAddresses(String(aa));
     const sm = norm(g('separacao_modo'));
     if (sm) sc.picking.mode = sm.startsWith('pal') || sm === 'pallet' ? 'pallet' : 'legacy';
     setN('pedido_caixas_media', (v) => (sc.picking.boxesPerOrder.mean = Math.max(1, v)));
@@ -632,6 +637,9 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['armazenagem_modo', sc.storage.mode === 'phased' ? 'faseada' : 'direta', 'direta (empilhadeira do stage ao endereço) | faseada (etapa 1 sem elevação até a rua; etapa 2 elevação)'],
     ['armazenagem_etapa1_equipamentos', sc.storage.step1With.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Faseada: equipamentos da etapa 1, separados por ; (o disponível é acionado)'],
     ['separacao_modo', sc.picking.mode === 'pallet' ? 'palete' : 'legado', 'legado (esteira e embalagem) | palete (rota, leitura de endereço, limite do palete, furos)'],
+    ['picking_area_modo', sc.picking.area.mode === 'custom' ? 'personalizada' : sc.picking.area.mode === 'faces' ? 'faces' : 'chao', 'Área de picking: chao (endereços próximos ao chão) | faces (racks com face de picking) | personalizada (lista de endereços)'],
+    ['picking_area_niveis', sc.picking.area.levels, 'Níveis a partir do chão (modos chao e faces)'],
+    ['picking_area_enderecos', sc.picking.area.addresses.join(', '), 'Modo personalizada: endereços da área de picking (ex.: A011, B021)'],
     ['pedido_caixas_media', sc.picking.boxesPerOrder.mean, 'Separação por palete: caixas por pedido – média'],
     ['pedido_caixas_desvio', sc.picking.boxesPerOrder.sd, 'Caixas por pedido – desvio'],
     ['curva_a_pct', sc.picking.abc.a, 'Percentual das caixas do pedido que são da curva A'],

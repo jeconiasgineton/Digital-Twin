@@ -3,7 +3,7 @@ import { defaultScenario } from '../src/model/defaults';
 import { defaultLayoutParams, generateLayout } from '../src/model/layoutGen';
 import { parseAddresses, planU, planZigzag, routeTravelSec, splitAmongPickers, type AisleInfo, type PickPos, type Stop } from '../src/model/picking';
 import { SimModel } from '../src/sim/model';
-import { buildWorld } from '../src/sim/world';
+import { buildWorld, slotLabel as slotLabelOf } from '../src/sim/world';
 import type { Layout, Scenario } from '../src/model/types';
 
 const dist = (a: { x: number; z: number }, b: { x: number; z: number }) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -189,7 +189,7 @@ describe('planilha, validações e interface de dados da separação', () => {
     const { exportTemplate, importWorkbook } = await import('../src/io/excel');
     const sc = defaultScenario();
     sc.picking = {
-      mode: 'pallet', boxesPerOrder: { mean: 100, sd: 15 }, abc: { a: 0.5, b: 0.3, c: 0.2 }, palletLimit: { mean: 80, sd: 5 }, route: 'zigzag', pickersPerOrder: 3,
+      mode: 'pallet', boxesPerOrder: { mean: 100, sd: 15 }, abc: { a: 0.5, b: 0.3, c: 0.2 }, palletLimit: { mean: 80, sd: 5 }, area: { mode: 'custom', levels: 2, addresses: ['A011', 'B012'] }, route: 'zigzag', pickersPerOrder: 3,
       scan: { kind: 'constant', a: 4 }, pick: { kind: 'triangular', a: 2, b: 6, c: 10 }, place: { kind: 'constant', a: 3 },
       stockout: { mode: 'positions', pct: 0.05, addresses: ['A015', 'B023'], delay: { kind: 'constant', a: 240 } },
     };
@@ -214,5 +214,72 @@ describe('planilha, validações e interface de dados da separação', () => {
     expect(m2.some((i) => i.level === 'erro' && /sem operários/.test(i.msg))).toBe(true);
     expect(m2.some((i) => i.level === 'erro' && /somam zero/.test(i.msg))).toBe(true);
     expect(m2.some((i) => /nenhum endereço foi informado/.test(i.msg))).toBe(true);
+  });
+});
+
+describe('área de picking', () => {
+  const positions = (sc: Scenario) => (new SimModel(sc, layout, 5) as any).pickPos as PickPos[][];
+  const nLevel = (p: PickPos) => Number(p.label.slice(-1));
+  it('padrão: todos os endereços próximos ao chão (nível 1) de todos os racks', () => {
+    const sc = base();
+    const all = positions(sc).flat();
+    const w = buildWorld(layout, sc);
+    const uniq = new Set(all.map((p) => p.label));
+    expect(sc.picking.area.mode).toBe('floor');
+    expect(uniq.size).toBe(w.racks.reduce((n, r) => n + r.rows * r.bays, 0)); // uma posição por vão e fileira
+    expect(all.every((p) => nLevel(p) === 1)).toBe(true);
+  });
+  it('níveis a partir do chão: 2 níveis dobram as posições', () => {
+    const um = base();
+    const dois = base();
+    dois.picking.area.levels = 2;
+    const a = new Set(positions(um).flat().map((p) => p.label)).size;
+    const b = new Set(positions(dois).flat().map((p) => p.label)).size;
+    expect(b).toBe(a * 2);
+    expect(positions(dois).flat().every((p) => nLevel(p) <= 2)).toBe(true);
+  });
+  it('só faces de picking: restringe aos racks marcados', () => {
+    const sc = base();
+    sc.picking.area.mode = 'faces';
+    const w = buildWorld(layout, sc);
+    const flagged = w.racks.filter((r) => r.pickFace);
+    expect(flagged.length).toBeGreaterThan(0);
+    expect(flagged.length).toBeLessThan(w.racks.length);
+    const n = new Set(positions(sc).flat().map((p) => p.label)).size;
+    expect(n).toBe(flagged.reduce((s, r) => s + r.rows * r.bays, 0));
+  });
+  it('posições específicas: só os endereços informados (em qualquer nível); os inexistentes são contados', () => {
+    const sc = base();
+    const w = buildWorld(layout, sc);
+    const r = w.racks[0];
+    const ok = [slotLabelOf(r, 0), slotLabelOf(r, 3)]; // vão 1 nível 1; nível 4 do vão 1
+    sc.picking.area = { mode: 'custom', levels: 1, addresses: [...ok, 'ZZ999'] };
+    const m = new SimModel(sc, layout, 5) as any;
+    const labels = new Set((m.pickPos as PickPos[][]).flat().map((p) => p.label));
+    expect([...labels].sort()).toEqual([...ok].sort());
+    expect(m.unmatchedPickAddresses).toBe(1);
+  });
+  it('sem nenhum endereço válido cai para o chão de todos os racks (não trava)', () => {
+    const sc = base();
+    sc.picking.area = { mode: 'custom', levels: 1, addresses: ['NADA'] };
+    const { k } = run(sc);
+    expect(k.pickPalletsPerDay).toBeGreaterThan(0);
+  });
+  it('a coleta acontece só dentro da área definida', () => {
+    const sc = base();
+    const w = buildWorld(layout, sc);
+    const r = w.racks[0];
+    sc.picking.area = { mode: 'custom', levels: 1, addresses: [slotLabelOf(r, 0)] };
+    sc.picking.stockout = { mode: 'positions', pct: 0, addresses: [slotLabelOf(r, 0)], delay: { kind: 'constant', a: 60 } };
+    const k = run(sc).k;
+    expect(k.stockoutPicksPerDay).toBeGreaterThan(0); // todas as paradas são nesse único endereço, que está vazio
+    expect(k.stockoutPicksPerDay).toBeGreaterThanOrEqual(k.linesPerDay);
+  });
+  it('as curvas A, B e C dividem a área por proximidade (20/30/50%)', () => {
+    const p = positions(base());
+    const n = p.flat().length;
+    expect(p[0].length).toBeCloseTo(n * 0.2, -1);
+    expect(p[1].length).toBeCloseTo(n * 0.3, -1);
+    expect(p[2].length).toBeCloseTo(n * 0.5, -1);
   });
 });

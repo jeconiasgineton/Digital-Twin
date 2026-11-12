@@ -246,6 +246,7 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     if (sc.workers.count < 1 && sc.ordersPerHour.some((v) => v > 0)) out.push({ level: 'erro', msg: 'Separação por palete sem operários (separadores) configurados.' });
     if (sc.picking.abc.a + sc.picking.abc.b + sc.picking.abc.c <= 0) out.push({ level: 'erro', msg: 'Separação: os percentuais das curvas A, B e C somam zero.' });
     if (!layout.elements.some((e) => e.type === 'aisle')) out.push({ level: 'aviso', msg: 'Separação por palete sem ruas desenhadas: a rota em U não distingue lados da rua e os endereços não terão letra de rua.' });
+    if (sc.picking.area.mode === 'custom' && sc.picking.area.addresses.length === 0) out.push({ level: 'aviso', msg: 'Área de picking personalizada sem endereços: a coleta usará o chão de todos os racks.' });
     if (sc.picking.stockout.mode === 'positions' && sc.picking.stockout.addresses.length === 0) out.push({ level: 'aviso', msg: 'Furo de estoque por posições ativado, mas nenhum endereço foi informado.' });
   }
   if (sc.useCustomProcesses) {
