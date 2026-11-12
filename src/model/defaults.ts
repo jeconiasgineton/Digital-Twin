@@ -1,6 +1,7 @@
 import type { Dist, Scenario } from './types';
 import { NIOSH_LOAD_KG, defaultEquipment } from './equipment';
 import { defaultArrival, defaultCalendar } from './traffic';
+import { defaultReceiving } from './receiving';
 
 const tri = (min: number, mode: number, max: number): Dist => ({ kind: 'triangular', a: min, b: mode, c: max });
 
@@ -48,6 +49,7 @@ export function defaultScenario(): Scenario {
       loadPallet: tri(40, 60, 100),
       pickCarton: tri(6, 9, 16),
       dockTurnover: tri(300, 480, 900),
+      triageCarton: { kind: 'constant', a: 8 },
       packOrder: tri(40, 70, 140),
     },
     liftSpeed: 0.45,
@@ -70,5 +72,6 @@ export function defaultScenario(): Scenario {
     arrivalsOut: defaultArrival(),
     dockWaitThresholdMin: 10,
     calendar: defaultCalendar(),
+    receiving: defaultReceiving(),
   };
 }

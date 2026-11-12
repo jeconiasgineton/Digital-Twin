@@ -1,10 +1,11 @@
-import type { ArrivalSpec, FleetSpec, Layout, ReplicationResult, RunKpis, Scenario, HourSeries, VehicleType, PeopleRole } from '../model/types';
+import type { ArrivalSpec, EquipmentKind, FleetSpec, Layout, ReplicationResult, RunKpis, Scenario, HourSeries, VehicleType, PeopleRole } from '../model/types';
+import { trailerDepthM } from '../model/receiving';
 import { PEOPLE_ROLES, breakMinutesPerDay, effectiveVehicles, offsetInShift, waveOf } from '../model/traffic';
 import { Rng, sampleDist } from '../math/rng';
 import { mean, percentile } from '../math/stats';
 import type { Pt } from '../math/spatial';
 import { Pool, type PoolItem, Countdown, Sim, type Process } from './engine';
-import { type Agent, type ConveyorRT, type DockItem, type RackRT, SLOT_FREE, SLOT_OCCUPIED, SLOT_RESERVED, type World, buildWorld, findSlot, slotAddr } from './world';
+import { type Agent, type AreaRT, type ConveyorRT, type DockItem, type RackRT, SLOT_FREE, SLOT_OCCUPIED, SLOT_RESERVED, type World, buildWorld, findSlot, slotAddr } from './world';
 export type { World };
 
 /** Interface opcional para animação 3D. */
@@ -44,6 +45,11 @@ interface Counters {
   delaySec: number;
   waitOverIn: number;
   waitOverOut: number;
+  checked: number;
+  damaged: number;
+  damagedCartons: number;
+  wholeTriage: number;
+  triageOverflow: number;
 }
 
 export class SimModel {
@@ -62,7 +68,18 @@ export class SimModel {
   readonly c: Counters = {
     palletsIn: 0, palletsOut: 0, orders: 0, lines: 0, cartons: 0, trucksIn: 0, trucksOut: 0, inReq: 0, outReq: 0,
     stockouts: 0, overflow: 0, ordersArrived: 0, palletsRequested: 0, palletsDone: 0, scheduled: 0, delayed: 0, delaySec: 0, waitOverIn: 0, waitOverOut: 0,
+    checked: 0, damaged: 0, damagedCartons: 0, wholeTriage: 0, triageOverflow: 0,
   };
+  /** pools por tipo de equipamento (empilhadeira = this.forklifts) */
+  readonly eqPools: Record<EquipmentKind, Pool<Agent>>;
+  /** posições de stage (uma por palete de capacidade); null = layout sem stage (sem limite) */
+  private stageSlots: Pool<PoolItem> | null = null;
+  private stageInUse = 0;
+  private stageMax = 0;
+  private readonly stageWait: number[] = [];
+  private readonly checkCycle: number[] = [];
+  private rngDmg: Rng;
+  private skuCartons: number[] = [];
   /** estatísticas por tipo de veículo (índice = posição em effectiveVehicles) */
   private vStats: { name: string; n: number; dockSec: number; waitSec: number }[] = [];
   readonly dockWaitIn: number[] = [];
@@ -94,6 +111,7 @@ export class SimModel {
     this.rngRoute = root.fork('routing');
     this.rngVeh = root.fork('vehicles');
     this.rngDelay = root.fork('delay');
+    this.rngDmg = root.fork('damage');
     this.vehIn = effectiveVehicles(sc, 'in');
     this.vehOut = effectiveVehicles(sc, 'out');
     this.vStats = this.vehIn.map((v) => ({ name: v.name, n: 0, dockSec: 0, waitSec: 0 }));
@@ -104,12 +122,12 @@ export class SimModel {
     const sim = this.sim;
 
     // ---- frota ----
-    const mk = (kind: Agent['kind'], n: number, spec: FleetSpec, idBase: number): Pool<Agent> => {
+    const mk = (kind: Agent['kind'], n: number, spec: FleetSpec, idBase: number, eq?: EquipmentKind): Pool<Agent> => {
       const items: Agent[] = [];
       const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
       for (let i = 0; i < n; i++) {
         const a: Agent = {
-          id: idBase + i, kind, x: w.home.x + (i % cols) * 1.6, z: w.home.z + Math.floor(i / cols) * 1.6,
+          id: idBase + i, kind, eq, x: w.home.x + (i % cols) * 1.6, z: w.home.z + Math.floor(i / cols) * 1.6,
           busy: false, busyTime: 0, busySince: 0, downTime: 0, speedEmpty: spec.speedEmpty, speedLoaded: spec.speedLoaded, km: 0, tasks: 0,
         };
         items.push(a);
@@ -120,7 +138,23 @@ export class SimModel {
     this.forklifts = mk('forklift', sc.forklifts.count, sc.forklifts, 0);
     this.workers = mk('worker', sc.workers.count, sc.workers, 1000);
     this.checkers = mk('checker', sc.checkers.count, sc.checkers, 2000);
-    for (const p of [this.forklifts, this.workers, this.checkers]) p.statsFrom = this.warm;
+    this.forklifts.items.forEach((a) => (a.eq = 'forklift'));
+    this.eqPools = {
+      forklift: this.forklifts,
+      palletJack: mk('mover', 0, sc.forklifts, 0, 'palletJack'),
+      palletTruck: mk('mover', 0, sc.forklifts, 0, 'palletTruck'),
+      amr: mk('mover', 0, sc.forklifts, 0, 'amr'),
+    };
+    sc.equipment.forEach((e, k) => {
+      if (e.count > 0) this.eqPools[e.kind] = mk('mover', e.count, e, 3000 + 100 * k, e.kind);
+    });
+    for (const p of [this.forklifts, this.workers, this.checkers, this.eqPools.palletJack, this.eqPools.palletTruck, this.eqPools.amr]) p.statsFrom = this.warm;
+    if (w.stages.length) {
+      const slots: PoolItem[] = [];
+      for (const st of w.stages) for (let i = 0; i < st.capacity; i++) slots.push({ id: slots.length, x: st.pt.x, z: st.pt.z, busy: false, busyTime: 0, busySince: 0, downTime: 0 });
+      this.stageSlots = new Pool(sim, slots);
+      this.stageSlots.statsFrom = this.warm;
+    }
     this.dockIn = new Pool(sim, w.docksIn);
     this.dockOut = new Pool(sim, w.docksOut);
     this.dockIn.statsFrom = this.dockOut.statsFrom = this.warm;
@@ -136,6 +170,7 @@ export class SimModel {
     // ---- SKU / ABC ----
     const skus = sc.skus.length ? sc.skus : [{ sku: 'A', description: '', cls: 'A' as const, share: 0.7, cartonsPerPallet: 60 }, { sku: 'B', description: '', cls: 'B' as const, share: 0.2, cartonsPerPallet: 60 }, { sku: 'C', description: '', cls: 'C' as const, share: 0.1, cartonsPerPallet: 60 }];
     this.skuW = skus.map((s) => Math.max(0, s.share));
+    this.skuCartons = skus.map((s) => Math.max(1, Math.round(s.cartonsPerPallet)));
     this.skuCls = skus.map((s) => (s.cls === 'A' ? 0 : s.cls === 'B' ? 1 : 2));
     const sorted = [...w.pickRacks].sort((a, b) => a.rank - b.rank);
     const n = sorted.length;
@@ -158,7 +193,7 @@ export class SimModel {
     const startFail = (pool: Pool<Agent>, avail: number) => {
       if (avail >= 0.999 || avail <= 0) return;
       const mtbf = (MTTR * avail) / (1 - avail);
-      const rng = root.fork('fail' + pool.items[0]?.kind);
+      const rng = root.fork('fail' + (pool.items[0]?.eq ?? pool.items[0]?.kind));
       for (const it of pool.items) {
         sim.spawn(function* () {
           for (;;) {
@@ -171,10 +206,12 @@ export class SimModel {
     startFail(this.forklifts, sc.forklifts.availability);
     startFail(this.workers, sc.workers.availability);
     startFail(this.checkers, sc.checkers.availability);
+    for (const e of sc.equipment) startFail(this.eqPools[e.kind], e.availability);
 
     sim.spawn(this.vehicleArrivals(sc.arrivalsIn, sc.inboundTrucksPerHour, () => this.inboundTruck()));
     sim.spawn(this.vehicleArrivals(sc.arrivalsOut, sc.outboundTrucksPerHour, () => this.outboundTruck()));
     this.startBreaks();
+    this.startTriageClearing();
     sim.spawn(this.arrivals(sc.ordersPerHour, () => this.order()));
     sim.spawn(this.sampler());
   }
@@ -358,15 +395,18 @@ export class SimModel {
   private startBreaks() {
     const sc = this.sc;
     const sim = this.sim;
-    const pools: Record<PeopleRole, Pool<Agent>> = { forklift: this.forklifts, worker: this.workers, checker: this.checkers };
+    const amrBreaks = !sc.calendar.amrWorksDuringBreaks;
+    const poolsOf = (role: PeopleRole): Pool<Agent>[] =>
+      role === 'forklift' ? [this.forklifts] : role === 'worker' ? [this.workers] : role === 'checker' ? [this.checkers]
+        : [this.eqPools.palletJack, this.eqPools.palletTruck, ...(amrBreaks ? [this.eqPools.amr] : [])];
     for (const b of sc.calendar.breaks) {
       const off = offsetInShift(sc, b.startHour);
       if (off === null || b.durationMin <= 0) continue;
       for (const role of PEOPLE_ROLES) {
         if (!b.groups.includes(role)) continue;
-        const pool = pools[role];
-        pool.items.forEach((it, i) => {
-          const wave = waveOf(b, i, pool.items.length);
+        const members = poolsOf(role).flatMap((pool) => pool.items.map((it) => ({ pool, it })));
+        members.forEach(({ pool, it }, i) => {
+          const wave = waveOf(b, i, members.length);
           sim.spawn(function* () {
             for (let d = 0; d < sc.days; d++) {
               const t = d * sc.shiftHours * 3600 + off + wave * b.durationMin * 60;
@@ -404,7 +444,7 @@ export class SimModel {
     yield turn;
     const n = this.palletsPerTruck(v.pallets);
     const unloaded = new Countdown(this.sim, n);
-    for (let i = 0; i < n; i++) this.sim.spawn(this.inboundPallet(dock, unloaded, tDock));
+    for (let i = 0; i < n; i++) this.sim.spawn(this.inboundPallet(dock, unloaded, tDock, i, v.trailerLengthM));
     yield unloaded.signal;
     this.dockIn.release(dock);
     this.tracer?.truckLeft(id, 'in', this.sim.now);
@@ -414,31 +454,159 @@ export class SimModel {
     }
   }
 
-  private *inboundPallet(dock: DockItem, unloaded: Countdown, tDock: number): Process {
+  /** escolhe, entre os pools permitidos, o que tem equipamento ocioso agora (senão o menos congestionado) */
+  private choosePool(pools: Pool<Agent>[]): Pool<Agent> {
+    const ok = pools.filter((p) => p.items.length > 0);
+    if (!ok.length) return this.forklifts;
+    const idle = ok.find((p) => p.idleCount > 0);
+    if (idle) return idle;
+    return ok.reduce((b, p) => (p.queueLength / p.items.length < b.queueLength / b.items.length ? p : b));
+  }
+
+  private unloadPool(): Pool<Agent> {
+    return this.choosePool(this.sc.receiving.unloadWith.map((k) => this.eqPools[k]));
+  }
+
+  /** transporte do palete de avarias: paleteira / transpaleteira / AMR; sem nenhum deles, a empilhadeira */
+  private moverPool(): Pool<Agent> {
+    return this.choosePool([this.eqPools.palletJack, this.eqPools.palletTruck, this.eqPools.amr]);
+  }
+
+  /** movimentação dentro do baú (ida vazio, volta carregado) conforme a profundidade do palete */
+  private inTrailer(ag: Agent, d: number): number {
+    if (d <= 0) return 0;
+    if (this.sim.now >= this.warm) ag.km += (2 * d) / 1000;
+    return travelTime(d, ag.speedEmpty, this.sc.accel) + travelTime(d, ag.speedLoaded, this.sc.accel);
+  }
+
+  /** área de triagem: a primeira por prioridade com espaço; se todas lotadas, estoura na última */
+  private chooseTriage(): { area: AreaRT | null; overflow: boolean } {
+    const ts = this.world.triages;
+    if (!ts.length) return { area: null, overflow: true };
+    const free = ts.find((t) => t.occupied < t.capacity);
+    return free ? { area: free, overflow: false } : { area: ts[ts.length - 1], overflow: true };
+  }
+
+  /** leva um palete de avarias do stage até a área de triagem (liberando o espaço do stage na retirada) */
+  private *triageTransport(from: Pt, slot: PoolItem | undefined, measured: boolean): Process {
+    const pool = this.moverPool();
+    const mv: Agent = yield pool.request(from);
+    yield this.go(mv, from, false);
+    if (slot && this.stageSlots) {
+      this.stageSlots.release(slot);
+      this.stageInUse--;
+    }
+    const { area, overflow } = this.chooseTriage();
+    if (overflow && measured) this.c.triageOverflow++;
+    if (area) {
+      yield this.go(mv, area.pt, true);
+      if (!overflow) area.occupied++; // excedente é contabilizado como estouro, sem inflar a ocupação
+    }
+    mv.tasks++;
+    pool.release(mv);
+  }
+
+  /** coleta/descarte periódico das áreas de triagem */
+  private startTriageClearing() {
+    const every = this.sc.receiving.triageClearEveryHours * 3600;
+    if (every <= 0 || !this.world.triages.length) return;
+    const self = this;
+    this.sim.spawn(function* () {
+      for (;;) {
+        yield every;
+        for (const t of self.world.triages) t.occupied = 0;
+      }
+    });
+  }
+
+  private *inboundPallet(dock: DockItem, unloaded: Countdown, tDock: number, idx: number, trailerM: number): Process {
     const sc = this.sc;
     const c = this.c;
-    const cls = this.pickSku().cls;
+    const rcv = sc.receiving;
+    const sk = this.pickSku();
+    const cls = sk.cls;
+    const measured = tDock >= this.warm;
     c.palletsRequested++;
-    if (tDock >= this.warm) c.inReq++;
-    let fk: Agent = yield this.forklifts.request(dock.inner);
-    yield this.go(fk, dock.inner, false);
+    if (measured) c.inReq++;
+    const staged = sc.checkers.count > 0;
+
+    // 1) reserva espaço no stage ANTES de pegar equipamento (evita travar a frota segurando paletes)
+    let stageSlot: PoolItem | undefined;
+    if (staged && this.stageSlots) {
+      const t0 = this.sim.now;
+      stageSlot = yield this.stageSlots.request(dock.inner);
+      if (measured) this.stageWait.push((this.sim.now - t0) / 60);
+      this.stageInUse++;
+      this.stageMax = Math.max(this.stageMax, this.stageInUse);
+    }
+
+    // 2) descarga com o equipamento disponível; distância dentro do baú conforme o veículo
+    const eqPool = this.unloadPool();
+    let eq: Agent = yield eqPool.request(dock.inner);
+    yield this.go(eq, dock.inner, false);
+    if (rcv.trailerDepth) yield this.inTrailer(eq, trailerDepthM(idx, trailerM));
     yield sampleDist(this.rngSvc, sc.ops.unloadPallet);
     unloaded.tick();
-    if (sc.checkers.count > 0) {
-      // deposita na área de conferência, libera empilhadeira; conferente verifica; nova tarefa de guarda
-      const stage = { x: dock.inner.x, z: dock.inner.z - 2.5 };
-      yield this.go(fk, stage, true);
-      this.forklifts.release(fk);
+
+    let from: Pt = dock.inner;
+    let fk!: Agent;
+    if (staged) {
+      // 3) deixa o palete no stage; o conferente confere e (se houver avaria) faz a triagem
+      const stage: Pt = stageSlot ? { x: stageSlot.x, z: stageSlot.z } : { x: dock.inner.x, z: dock.inner.z - 2.5 };
+      from = stage;
+      yield this.go(eq, stage, true);
+      eqPool.release(eq);
+      const tCheck0 = this.sim.now;
       const ck: Agent = yield this.checkers.request(stage);
       yield this.go(ck, stage, false);
-      yield sampleDist(this.rngSvc, sc.ops.checkPallet);
+      const damaged = this.rngDmg.next() < rcv.damagePalletPct;
+      let checkT = sampleDist(this.rngSvc, sc.ops.checkPallet);
+      let nBad = 0;
+      let whole = false;
+      const cartons = this.skuCartons[sk.idx] ?? 1;
+      if (damaged) {
+        checkT *= Math.max(1, rcv.damagedCheckFactor);
+        const frac = Math.min(1, Math.max(0, sampleDist(this.rngDmg, rcv.damagedCartonsFraction)));
+        nBad = Math.min(cartons, Math.max(1, Math.round(frac * cartons)));
+        whole = nBad >= cartons;
+        if (!whole) checkT += this.sum(sc.ops.triageCarton, nBad); // repaletiza as caixas avariadas em um segundo palete
+      }
+      yield checkT;
       this.checkers.release(ck);
+      if (measured) {
+        c.checked++;
+        this.checkCycle.push((this.sim.now - tCheck0) / 60);
+        if (damaged) {
+          c.damaged++;
+          c.damagedCartons += nBad;
+          if (whole) c.wholeTriage++;
+        }
+      }
+      if (damaged && whole) {
+        // sem nenhuma caixa boa: o palete inteiro vai para a triagem
+        yield* this.triageTransport(stage, stageSlot, measured);
+        c.palletsDone++;
+        return;
+      }
+      if (damaged) this.sim.spawn(this.triageTransport(stage, undefined, measured)); // 2º palete só com as avariadas
+      // 4) palete bom: nova tarefa de guarda com empilhadeira
       fk = yield this.forklifts.request(stage);
       yield this.go(fk, stage, false);
+      if (stageSlot && this.stageSlots) {
+        this.stageSlots.release(stageSlot);
+        this.stageInUse--;
+      }
+    } else if (eqPool === this.forklifts) {
+      fk = eq; // sem conferência: a própria empilhadeira segue para a guarda
+    } else {
+      // equipamento sem elevação: deixa o palete na doca e chama uma empilhadeira
+      eqPool.release(eq);
+      fk = yield this.forklifts.request(dock.inner);
+      yield this.go(fk, dock.inner, false);
     }
-    const rack = this.chooseRackPut(cls, dock.inner);
+    const rack = this.chooseRackPut(cls, from);
     if (!rack) {
-      if (tDock >= this.warm) c.overflow++;
+      if (measured) c.overflow++;
       c.palletsDone++;
       this.forklifts.release(fk);
       return;
@@ -457,7 +625,7 @@ export class SimModel {
       c.palletsIn++;
       this.hourBucket().in++;
     }
-    if (tDock >= this.warm) this.putawayLead.push((this.sim.now - tDock) / 60);
+    if (measured) this.putawayLead.push((this.sim.now - tDock) / 60);
   }
 
   private *outboundTruck(): Process {
@@ -676,6 +844,11 @@ export class SimModel {
     const totalCost = fleetCost * hours;
     const moved = c.palletsIn + c.palletsOut;
     const kms = (p: Pool<Agent>) => (p.items.length ? mean(p.items.map((a) => a.km)) : 0);
+    const moverPools = [this.eqPools.palletJack, this.eqPools.palletTruck, this.eqPools.amr].filter((p) => p.items.length);
+    for (const p of moverPools) p.finalize();
+    this.stageSlots?.finalize();
+    const moverUnits = moverPools.reduce((n, p) => n + p.items.length, 0);
+    const utilMover = moverUnits ? moverPools.reduce((u, p) => u + p.utilization(end) * p.items.length, 0) / moverUnits : 0;
     const breakFk = breakMinutesPerDay(sc, 'forklift');
     const prodFk = Math.max(0.05, 1 - breakFk / 60 / sc.shiftHours); // fração do turno em horas úteis
     const prodWk = Math.max(0.05, 1 - breakMinutesPerDay(sc, 'worker') / 60 / sc.shiftHours);
@@ -727,6 +900,15 @@ export class SimModel {
       productiveHoursPerDay: sc.shiftHours * prodFk,
       breakHoursPerDay: breakFk / 60,
       nonWorkingHoursPerDay: Math.max(0, 24 - sc.shiftHours),
+      damagedPalletsPerDay: c.damaged / days,
+      damagedPalletPct: c.checked ? c.damaged / c.checked : 0,
+      damagedCartonsPerDay: c.damagedCartons / days,
+      wholePalletTriagePerDay: c.wholeTriage / days,
+      triageOverflowPerDay: c.triageOverflow / days,
+      checkCycleMean: mean(this.checkCycle),
+      stageWaitMean: mean(this.stageWait),
+      stageOccupancyMax: this.stageMax,
+      utilMover,
     };
     kpis.backlogOrders = this.workers.queueLength; // pedidos ainda aguardando operário ao final
     return {

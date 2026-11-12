@@ -1,8 +1,8 @@
 import type { ArrivalSpec, BreakSpec, Dist, PeopleRole, Scenario, VehicleType, WorkCalendar } from './types';
 import { distMean } from '../math/rng';
 
-export const PEOPLE_ROLES: PeopleRole[] = ['forklift', 'worker', 'checker'];
-export const ROLE_NAMES: Record<PeopleRole, string> = { forklift: 'Empilhadeiristas', worker: 'Operários', checker: 'Conferentes' };
+export const PEOPLE_ROLES: PeopleRole[] = ['forklift', 'worker', 'checker', 'mover'];
+export const ROLE_NAMES: Record<PeopleRole, string> = { forklift: 'Empilhadeiristas', worker: 'Operários', checker: 'Conferentes', mover: 'Operadores de paleteira/transpaleteira' };
 
 const tri = (a: number, b: number, c: number): Dist => ({ kind: 'triangular', a, b, c });
 

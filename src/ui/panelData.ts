@@ -1,4 +1,5 @@
 import type { ArrivalSpec, BreakSpec, Dist, DistKind, EquipmentSpec, FleetSpec, PeopleRole, Scenario, VehicleType } from '../model/types';
+import { EQUIPMENT_NAMES } from '../model/equipment';
 import { PEOPLE_ROLES, ROLE_NAMES, breakWaves, defaultBreak, presetVehicle } from '../model/traffic';
 import { catalog, defaultEquipment, NIOSH_LOAD_KG } from '../model/equipment';
 import { hourlyProfile } from '../model/defaults';
@@ -300,6 +301,24 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
         h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('truck')); ch(); ctx.rerender(); } }, '+ Truck'),
         h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('vuc')); ch(); ctx.rerender(); } }, '+ VUC')),
     ], false),
+    section('Recebimento: descarga, avarias e triagem', [
+      h('b', null, 'Equipamentos que podem descarregar o baú'),
+      h('p', { class: 'note' }, 'O equipamento disponível no momento é acionado. Só vale para os que têm quantidade maior que 0 no catálogo.'),
+      h('div', { class: 'row' }, (['forklift', 'palletJack', 'palletTruck', 'amr'] as const).map((k) =>
+        h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.receiving.unloadWith.includes(k), onchange: (ev: Event) => {
+          sc.receiving.unloadWith = (ev.target as HTMLInputElement).checked ? [...new Set([...sc.receiving.unloadWith, k])] : sc.receiving.unloadWith.filter((x) => x !== k);
+          ch(); ctx.rerender();
+        } }), EQUIPMENT_NAMES[k]))),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.receiving.trailerDepth, onchange: (ev: Event) => { sc.receiving.trailerDepth = (ev.target as HTMLInputElement).checked; ch(); } }), 'Distância dentro do baú conforme o comprimento do veículo'),
+      h('b', null, 'Avarias'),
+      numField('Paletes avariados', () => sc.receiving.damagePalletPct * 100, (v) => ((sc.receiving.damagePalletPct = Math.min(1, Math.max(0, v / 100))), ch()), { step: 0.5, min: 0, max: 100, unit: '%', title: 'Probabilidade de cada palete conferido ter avaria. Padrão: 3% (premissa)' }),
+      numField('Caixas avariadas no palete – mínimo', () => sc.receiving.damagedCartonsFraction.a * 100, (v) => { const f = sc.receiving.damagedCartonsFraction; sc.receiving.damagedCartonsFraction = { kind: 'triangular', a: Math.min(1, Math.max(0, v / 100)), b: f.b, c: f.c }; ch(); }, { step: 1, min: 0, max: 100, unit: '%' }),
+      numField('… mais provável (moda)', () => (sc.receiving.damagedCartonsFraction.b ?? 0.2) * 100, (v) => { const f = sc.receiving.damagedCartonsFraction; sc.receiving.damagedCartonsFraction = { kind: 'triangular', a: f.a, b: Math.min(1, Math.max(0, v / 100)), c: f.c }; ch(); }, { step: 1, min: 0, max: 100, unit: '%' }),
+      numField('… máximo (100% = palete inteiro)', () => (sc.receiving.damagedCartonsFraction.c ?? 1) * 100, (v) => { const f = sc.receiving.damagedCartonsFraction; sc.receiving.damagedCartonsFraction = { kind: 'triangular', a: f.a, b: f.b, c: Math.min(1, Math.max(0, v / 100)) }; ch(); }, { step: 1, min: 0, max: 100, unit: '%', title: 'Se todas as caixas estiverem avariadas, o palete original vai inteiro para a triagem' }),
+      numField('Acréscimo no tempo de conferência', () => (sc.receiving.damagedCheckFactor - 1) * 100, (v) => ((sc.receiving.damagedCheckFactor = 1 + Math.max(0, v) / 100), ch()), { step: 10, min: 0, unit: '%', title: 'Palete avariado leva mais tempo para ser conferido. Padrão: +50% (premissa)' }),
+      numField('Esvaziar triagem a cada', () => sc.receiving.triageClearEveryHours, (v) => ((sc.receiving.triageClearEveryHours = Math.max(0, v)), ch()), { step: 1, min: 0, unit: 'h', title: 'Coleta/descarte periódico das áreas de triagem. 0 = nunca' }),
+      h('p', { class: 'note' }, 'A conferência (e portanto a detecção e a triagem de avarias) só ocorre com conferentes (quantidade > 0). O tempo por caixa na triagem (padrão 8 s, premissa) está em "Tempos de operação". Ao lotar uma área de triagem, o palete segue para a próxima por prioridade. O palete de avarias é levado por paleteira/transpaleteira/AMR; sem nenhum deles, pela empilhadeira.'),
+    ], false),
     section('Jornada e intervalos', [
       h('p', { class: 'note' }, `Jornada: ${sc.shiftHours} h a partir das ${fmtHour(sc.startHour)} (ajuste em "Horizonte e metas"). As ${fmt(Math.max(0, 24 - sc.shiftHours), 0)} h restantes do dia são horas não úteis e não são simuladas. A produtividade usa as horas úteis (jornada − intervalos).`),
       ...sc.calendar.breaks.map((b) => breakCard(ctx, b)),
@@ -341,7 +360,7 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
         h('thead', null, h('tr', null, ['Operação', 'Distribuição', 'P1', 'P2', 'P3'].map((t) => h('th', null, t)))),
         h('tbody', null, ...([
           ['Descarga de palete', 'unloadPallet'], ['Conferência', 'checkPallet'], ['Posicionar no rack', 'putawayPosition'], ['Carga no caminhão', 'loadPallet'],
-          ['Separar 1 caixa', 'pickCarton'], ['Manobra na doca', 'dockTurnover'], ['Embalar pedido', 'packOrder'],
+          ['Separar 1 caixa', 'pickCarton'], ['Manobra na doca', 'dockTurnover'], ['Embalar pedido', 'packOrder'], ['Triagem: 1 caixa avariada', 'triageCarton'],
         ] as [string, keyof Scenario['ops']][]).map(([lab, key]) => distRow(ctx, lab, () => sc.ops[key], (d) => ((sc.ops[key] = d), ch())))),
       ),
       numField('Velocidade de elevação', () => sc.liftSpeed, (v) => ((sc.liftSpeed = v), ch()), { min: 0.05, step: 0.05, unit: 'm/s' }),

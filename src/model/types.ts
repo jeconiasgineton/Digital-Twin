@@ -161,7 +161,7 @@ export interface ArrivalSpec {
   delayMin: Dist;
 }
 
-export type PeopleRole = 'forklift' | 'worker' | 'checker';
+export type PeopleRole = 'forklift' | 'worker' | 'checker' | 'mover';
 
 export interface BreakSpec {
   name: string;
@@ -179,6 +179,22 @@ export interface WorkCalendar {
   breaks: BreakSpec[];
   /** AMR continuam trabalhando durante os intervalos das pessoas? */
   amrWorksDuringBreaks: boolean;
+}
+
+/** recebimento: descarga, conferência, avarias e triagem */
+export interface ReceivingSpec {
+  /** probabilidade de um palete conferido estar avariado (0–1); só vale com conferentes (a conferência é quem detecta) */
+  damagePalletPct: number;
+  /** fração das caixas avariadas dentro de um palete avariado (0–1); 100% => o palete vai inteiro para a triagem */
+  damagedCartonsFraction: Dist;
+  /** multiplicador do tempo de conferência de um palete avariado (1,5 = +50%) */
+  damagedCheckFactor: number;
+  /** equipamentos que podem descarregar o baú; o disponível é acionado */
+  unloadWith: EquipmentKind[];
+  /** distância dentro do baú conforme o comprimento do veículo */
+  trailerDepth: boolean;
+  /** as áreas de triagem são esvaziadas (coleta/descarte) a cada N horas; 0 = nunca */
+  triageClearEveryHours: number;
 }
 
 export interface Scenario {
@@ -217,6 +233,7 @@ export interface Scenario {
     loadPallet: Dist; // carregar palete no caminhão
     pickCarton: Dist; // separar uma caixa
     dockTurnover: Dist; // manobra/troca de caminhão na doca
+    triageCarton: Dist; // triagem: tempo para mover uma caixa avariada para o palete de avarias
     packOrder: Dist; // consolidar pedido na estação
   };
   liftSpeed: number; // m/s (garfo)
@@ -237,6 +254,7 @@ export interface Scenario {
   /** espera na doca acima da qual o caminhão conta como "gargalo" (min) */
   dockWaitThresholdMin: number;
   calendar: WorkCalendar;
+  receiving: ReceivingSpec;
 }
 
 /* ---------- resultados ---------- */
@@ -306,6 +324,16 @@ export interface RunKpis {
   productiveHoursPerDay: number; // horas úteis por dia por empilhadeira (turno − intervalos)
   breakHoursPerDay: number; // intervalos por dia por empilhadeira
   nonWorkingHoursPerDay: number; // horas não úteis do dia (24 − turno)
+  // recebimento: avarias, conferência, triagem
+  damagedPalletsPerDay: number;
+  damagedPalletPct: number; // % dos paletes conferidos
+  damagedCartonsPerDay: number;
+  wholePalletTriagePerDay: number; // paletes que foram inteiros para a triagem
+  triageOverflowPerDay: number; // paletes que não couberam em nenhuma área de triagem
+  checkCycleMean: number; // conferência + triagem por palete (min)
+  stageWaitMean: number; // espera por espaço no stage (min)
+  stageOccupancyMax: number; // paletes simultâneos no stage
+  utilMover: number; // utilização de paleteiras/transpaleteiras/AMR
 }
 
 export interface VehicleStat {

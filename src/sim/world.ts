@@ -1,4 +1,4 @@
-import type { Layout, LayoutElement, Scenario } from '../model/types';
+import type { EquipmentKind, Layout, LayoutElement, Scenario } from '../model/types';
 import { arrivalProfile } from '../model/traffic';
 import { validateEquipment } from '../model/equipment';
 import { aisleCodeOf, aisleOf, areaCapacity } from '../model/areas';
@@ -12,7 +12,9 @@ export const DOCK_DEPTH = 3.5; // ponto interno de trabalho (m para dentro do ga
 export const TRUCK_SPOT = 7.5; // centro do caminhão estacionado (m para fora)
 
 export interface Agent extends PoolItem {
-  kind: 'forklift' | 'worker' | 'checker';
+  kind: 'forklift' | 'worker' | 'checker' | 'mover';
+  /** tipo de equipamento do catálogo (empilhadeira, paleteira, transpaleteira, AMR) */
+  eq?: EquipmentKind;
   speedEmpty: number;
   speedLoaded: number;
   km: number;
@@ -222,6 +224,17 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     else if (!codes.includes(a) && aisles.length) out.push({ level: 'aviso', msg: `O endereço transitório "${t.name}" aponta para a rua "${a}", que não existe.` });
   }
   out.push(...validateEquipment(sc, c('charger')));
+  const rc = sc.receiving;
+  if (rc.damagePalletPct > 0 && sc.checkers.count < 1 && needIn)
+    out.push({ level: 'aviso', msg: 'Há avarias configuradas, mas não há conferentes: sem conferência não há detecção nem triagem de avarias.' });
+  if (rc.damagePalletPct > 0 && sc.checkers.count > 0 && c('triage') === 0)
+    out.push({ level: 'aviso', msg: 'Há avarias configuradas, mas o layout não tem área de triagem (ferramenta "Triagem").' });
+  if (sc.checkers.count > 0 && c('stage') === 0) out.push({ level: 'aviso', msg: 'Há conferentes, mas o layout não tem stage: o espaço de espera dos paletes não será limitado.' });
+  if (rc.unloadWith.length === 0) out.push({ level: 'erro', msg: 'Nenhum equipamento permitido para a descarga do baú.' });
+  for (const k of rc.unloadWith) {
+    const e = sc.equipment.find((x) => x.kind === k) ?? (k === 'forklift' ? sc.forklifts : undefined);
+    if (e && e.count < 1) out.push({ level: 'aviso', msg: `A descarga permite "${e.name}", mas a quantidade configurada é 0.` });
+  }
   if (sc.workers.count < 1 && sc.ordersPerHour.some((v) => v > 0)) out.push({ level: 'aviso', msg: 'Nenhum operário configurado para o picking.' });
   return out;
 }

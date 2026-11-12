@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import type { ArrivalSpec, BreakSpec, Dist, DistKind, EquipmentSpec, FleetSpec, PeopleRole, VehicleType, Layout, LayoutElement, Scenario, SkuSpec } from '../model/types';
+import type { ArrivalSpec, BreakSpec, Dist, DistKind, EquipmentKind, EquipmentSpec, FleetSpec, PeopleRole, VehicleType, Layout, LayoutElement, Scenario, SkuSpec } from '../model/types';
 import { defaultScenario } from '../model/defaults';
 import { defaultEquipment, normalizeEquipment } from '../model/equipment';
 import { PEOPLE_ROLES } from '../model/traffic';
@@ -140,6 +140,7 @@ const OPS: [keyof Scenario['ops'], string[]][] = [
   ['pickCarton', ['separacao_caixa', 'picking_caixa', 'picking']],
   ['dockTurnover', ['manobra_doca', 'troca_caminhao']],
   ['packOrder', ['embalagem_pedido', 'embalagem', 'consolidacao']],
+  ['triageCarton', ['triagem_caixa', 'triagem']],
 ];
 
 const ELEMENT_ALIASES: Record<string, LayoutElement['type']> = {
@@ -171,8 +172,9 @@ const ROLE_ALIASES: Record<string, PeopleRole> = {
   empilhadeira: 'forklift', empilhadeiras: 'forklift', empilhadeirista: 'forklift', empilhadeiristas: 'forklift', forklift: 'forklift',
   operario: 'worker', operarios: 'worker', picking: 'worker', worker: 'worker',
   conferente: 'checker', conferentes: 'checker', checker: 'checker',
+  paleteira: 'mover', paleteiras: 'mover', transpaleteira: 'mover', transpaleteiras: 'mover', mover: 'mover', operador_paleteira: 'mover',
 };
-const ROLE_NAMES_PT: Record<PeopleRole, string> = { forklift: 'empilhadeira', worker: 'operario', checker: 'conferente' };
+const ROLE_NAMES_PT: Record<PeopleRole, string> = { forklift: 'empilhadeira', worker: 'operario', checker: 'conferente', mover: 'paleteira' };
 
 export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<ImportResult> {
   const wb = new ExcelJS.Workbook();
@@ -231,6 +233,28 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     if (oc !== undefined) sc.initialOccupancy = Math.min(1, Math.max(0, oc));
     setN('permanencia_dias', (v) => (sc.dwellDays = v));
     setN('fator_demanda', (v) => (sc.demandFactor = v));
+    const dp = frac(g('dano_paletes_pct'));
+    if (dp !== undefined) sc.receiving.damagePalletPct = Math.min(1, Math.max(0, dp));
+    {
+      const f = sc.receiving.damagedCartonsFraction;
+      const lo = frac(g('dano_fracao_min'), f.a);
+      const mo = frac(g('dano_fracao_moda'), f.b);
+      const hi = frac(g('dano_fracao_max'), f.c);
+      if (g('dano_fracao_min') !== undefined || g('dano_fracao_moda') !== undefined || g('dano_fracao_max') !== undefined) {
+        const [a, b, c] = [lo ?? 0.05, mo ?? 0.2, hi ?? 1].map((x) => Math.min(1, Math.max(0, x))).sort((x, y) => x - y);
+        sc.receiving.damagedCartonsFraction = { kind: 'triangular', a, b, c };
+      }
+    }
+    setN('dano_fator_conferencia', (v) => (sc.receiving.damagedCheckFactor = Math.max(1, v)));
+    setN('triagem_esvaziar_h', (v) => (sc.receiving.triageClearEveryHours = Math.max(0, v)));
+    const bau = norm(g('bau_profundidade'));
+    if (bau) sc.receiving.trailerDepth = ['s', 'sim', '1', 'true', 'x'].includes(bau);
+    const uw = g('descarga_equipamentos');
+    if (uw !== undefined && uw !== null && String(uw).trim() !== '') {
+      const kinds = [...new Set(String(uw).split(/[;|,]/).map((x) => norm(x)).map((t) => (t.startsWith('empilh') || t.startsWith('forklift') ? 'forklift' : t.startsWith('paletei') ? 'palletJack' : t.startsWith('transpal') ? 'palletTruck' : t.startsWith('amr') ? 'amr' : null)).filter((x): x is EquipmentKind => !!x))];
+      if (kinds.length) sc.receiving.unloadWith = kinds;
+      else warn('descarga_equipamentos: use empilhadeira, paleteira_manual, transpaleteira e/ou amr.');
+    }
     setN('limite_espera_doca_min', (v) => (sc.dockWaitThresholdMin = v), [0, 600]);
     const amrBreaks = norm(g('amr_trabalha_intervalos'));
     if (amrBreaks) sc.calendar.amrWorksDuringBreaks = ['s', 'sim', '1', 'true', 'x'].includes(amrBreaks);
@@ -517,6 +541,14 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['permanencia_dias', sc.dwellDays, 'Permanência média do palete no estoque (dias)'],
     ['enderecamento', sc.slotting === 'abc' ? 'abc' : sc.slotting === 'nearest' ? 'proximo' : 'aleatorio', 'abc | proximo | aleatorio'],
     ['fator_demanda', sc.demandFactor, 'Multiplicador global da demanda (sensibilidade)'],
+    ['dano_paletes_pct', sc.receiving.damagePalletPct, 'Recebimento: % de paletes avariados (0–1); detectados na conferência'],
+    ['dano_fracao_min', sc.receiving.damagedCartonsFraction.a, 'Fração de caixas avariadas num palete avariado – mínimo (0–1)'],
+    ['dano_fracao_moda', sc.receiving.damagedCartonsFraction.b ?? 0.2, 'Fração de caixas avariadas – moda'],
+    ['dano_fracao_max', sc.receiving.damagedCartonsFraction.c ?? 1, 'Fração de caixas avariadas – máximo (1 = palete inteiro vai para a triagem)'],
+    ['dano_fator_conferencia', sc.receiving.damagedCheckFactor, 'Multiplicador do tempo de conferência de um palete avariado (1,5 = +50%)'],
+    ['triagem_esvaziar_h', sc.receiving.triageClearEveryHours, 'As áreas de triagem são esvaziadas a cada N horas (0 = nunca)'],
+    ['bau_profundidade', sc.receiving.trailerDepth ? 'S' : 'N', 'S = a distância dentro do baú depende do comprimento do veículo'],
+    ['descarga_equipamentos', sc.receiving.unloadWith.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Equipamentos que podem descarregar o baú (o disponível é acionado), separados por ;'],
     ['limite_espera_doca_min', sc.dockWaitThresholdMin, 'Espera na doca acima da qual o caminhão conta como gargalo (min)'],
     ['amr_trabalha_intervalos', sc.calendar.amrWorksDuringBreaks ? 'S' : 'N', 'S = AMR continuam trabalhando nos intervalos das pessoas'],
     ...(['entrada', 'saida'] as const).flatMap((dir): [string, any, string][] => {
@@ -579,6 +611,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   o.addRow(distRow('separacao_caixa', sc.ops.pickCarton, 'Separar uma caixa (s)'));
   o.addRow(distRow('manobra_doca', sc.ops.dockTurnover, 'Manobra/troca de caminhão na doca (s)'));
   o.addRow(distRow('embalagem_pedido', sc.ops.packOrder, 'Consolidação do pedido na estação (s)'));
+  o.addRow(distRow('triagem_caixa', sc.ops.triageCarton, 'Triagem: mover uma caixa avariada para o palete de avarias (s por caixa)'));
   styleHeader(o);
 
   const s = wb.addWorksheet('SKUs');
