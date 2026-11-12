@@ -1,4 +1,5 @@
 import type { Layout, LayoutElement, Scenario } from '../model/types';
+import { validateEquipment } from '../model/equipment';
 import { aisleCodeOf, aisleOf, areaCapacity } from '../model/areas';
 import {
   type DistField, type NavGrid, type Pt, astar, buildNavGrid, cellCenter, cellOf, dijkstraField, dist, fieldPath,
@@ -219,7 +220,7 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     if (!a) out.push({ level: 'aviso', msg: `O endereço transitório "${t.name}" não pertence a nenhuma rua (desenhe uma rua ou informe o código).` });
     else if (!codes.includes(a) && aisles.length) out.push({ level: 'aviso', msg: `O endereço transitório "${t.name}" aponta para a rua "${a}", que não existe.` });
   }
-  if (sc.forklifts.count < 1) out.push({ level: 'aviso', msg: 'Nenhuma empilhadeira configurada.' });
+  out.push(...validateEquipment(sc, c('charger')));
   if (sc.workers.count < 1 && sc.ordersPerHour.some((v) => v > 0)) out.push({ level: 'aviso', msg: 'Nenhum operário configurado para o picking.' });
   return out;
 }

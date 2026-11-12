@@ -1,4 +1,5 @@
 import type { Dist, Scenario } from './types';
+import { NIOSH_LOAD_KG, defaultEquipment } from './equipment';
 
 const tri = (min: number, mode: number, max: number): Dist => ({ kind: 'triangular', a: min, b: mode, c: max });
 
@@ -28,9 +29,10 @@ export function defaultScenario(): Scenario {
     targetUtilization: 0.85,
     targetWaitP95Min: 10,
     serviceLevel: 0.95,
-    forklifts: { count: 5, speedEmpty: 3.0, speedLoaded: 2.2, availability: 0.94, costPerHour: 85 },
-    workers: { count: 10, speedEmpty: 1.2, speedLoaded: 1.0, availability: 0.92, costPerHour: 38 },
-    checkers: { count: 0, speedEmpty: 1.2, speedLoaded: 1.0, availability: 0.95, costPerHour: 38 },
+    forklifts: defaultEquipment('forklift', 5),
+    equipment: [defaultEquipment('palletJack', 0), defaultEquipment('palletTruck', 0), defaultEquipment('amr', 0)],
+    workers: { count: 10, speedEmpty: 1.2, speedLoaded: 1.0, availability: 0.92, costPerHour: 38, capacityKg: NIOSH_LOAD_KG },
+    checkers: { count: 0, speedEmpty: 1.2, speedLoaded: 1.0, availability: 0.95, costPerHour: 38, capacityKg: NIOSH_LOAD_KG },
     inboundTrucksPerHour: hourlyProfile(24),
     outboundTrucksPerHour: hourlyProfile(22),
     ordersPerHour: hourlyProfile(900),

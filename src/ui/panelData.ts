@@ -1,4 +1,5 @@
-import type { Dist, DistKind, FleetSpec, Scenario } from '../model/types';
+import type { Dist, DistKind, EquipmentSpec, FleetSpec, Scenario } from '../model/types';
+import { catalog, defaultEquipment, NIOSH_LOAD_KG } from '../model/equipment';
 import { hourlyProfile } from '../model/defaults';
 import { exportTemplate, importWorkbook } from '../io/excel';
 import type { AppCtx } from './ctx';
@@ -92,6 +93,47 @@ function fleetRows(ctx: AppCtx, name: string, f: FleetSpec, vUnit = 'm/s') {
   );
 }
 
+/** cartão de um equipamento do catálogo, com os campos próprios do AMR */
+function equipmentCard(ctx: AppCtx, e: EquipmentSpec): HTMLElement {
+  const sc = ctx.scenario;
+  const ch = () => ctx.scenarioChanged();
+  const chk = (label: string, get: () => boolean, set: (v: boolean) => void, disabled = false) =>
+    h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: get(), disabled, onchange: (ev: Event) => { set((ev.target as HTMLInputElement).checked); ch(); } }), label);
+  const fields: HTMLElement[] = [
+    numField('Quantidade', () => e.count, (v) => ((e.count = Math.max(0, Math.round(v))), ch()), { step: 1, min: 0 }),
+    numField('Velocidade vazio', () => e.speedEmpty, (v) => ((e.speedEmpty = v), ch()), { step: 0.05, min: 0.1, unit: 'm/s' }),
+    numField('Velocidade carregado', () => e.speedLoaded, (v) => ((e.speedLoaded = v), ch()), { step: 0.05, min: 0.1, unit: 'm/s' }),
+    numField('Capacidade de carga', () => e.capacityKg, (v) => ((e.capacityKg = Math.max(1, v)), ch()), { step: 50, min: 1, unit: 'kg' }),
+    numField('Paletes por viagem', () => e.palletsPerTrip, (v) => ((e.palletsPerTrip = Math.max(1, Math.round(v))), ch()), { step: 1, min: 1 }),
+    numField('Disponibilidade', () => e.availability * 100, (v) => ((e.availability = Math.min(1, v / 100)), ch()), { step: 1, min: 5, max: 100, unit: '%' }),
+    numField('Custo', () => e.costPerHour, (v) => ((e.costPerHour = v), ch()), { step: 1, min: 0, unit: 'R$/h' }),
+    chk('Eleva o palete até os níveis do rack', () => e.canLift, (v) => (e.canLift = v)),
+    chk('Precisa de operador', () => e.needsOperator, (v) => (e.needsOperator = v), e.kind === 'amr'),
+  ];
+  if (e.kind === 'amr' && e.amr) {
+    const a = e.amr;
+    fields.push(
+      h('b', null, 'Bateria e carregamento'),
+      numField('Autonomia da bateria', () => a.autonomyMin, (v) => ((a.autonomyMin = Math.max(1, v)), ch()), { step: 10, min: 1, unit: 'min', title: 'Operação contínua entre cargas completas' }),
+      numField('Gatilho de carga', () => a.chargeTriggerFraction * 100, (v) => ((a.chargeTriggerFraction = Math.min(1, Math.max(0.05, v / 100))), ch()), { step: 5, min: 5, max: 100, unit: '% da autonomia', title: 'Ao consumir esta fração da autonomia, o AMR interrompe a atividade e vai à estação de carga (50% = metade)' }),
+      numField('Tempo de carregamento', () => a.chargeMin, (v) => ((a.chargeMin = Math.max(0, v)), ch()), { step: 5, min: 0, unit: 'min' }),
+      numField('Setup a cada carga', () => a.setupMin, (v) => ((a.setupMin = Math.max(0, v)), ch()), { step: 1, min: 0, unit: 'min' }),
+      chk('Carregar também no início do turno', () => a.chargeAtShiftStart, (v) => (a.chargeAtShiftStart = v)),
+      chk('Carregar também no fim do turno', () => a.chargeAtShiftEnd, (v) => (a.chargeAtShiftEnd = v)),
+      h('label', { class: 'f' }, h('span', null, 'Horários específicos de carga (h, separados por ;)'),
+        h('input', { type: 'text', value: a.chargeAtHours.join(';'), placeholder: 'ex.: 12;18.5', onchange: (ev: Event) => { a.chargeAtHours = (ev.target as HTMLInputElement).value.split(/[;,]/).map((x) => parseFloat(x.trim())).filter((x) => Number.isFinite(x) && x >= 0 && x < 24); (ev.target as HTMLInputElement).value = a.chargeAtHours.join(';'); ch(); } })),
+    );
+  }
+  const defs = defaultEquipment(e.kind, e.count);
+  return h('details', { open: e.count > 0 },
+    h('summary', null, `${e.name} · ${e.count} un.`),
+    h('div', { class: 'body', style: { display: 'grid', gap: '7px' } }, fields,
+      e.source ? h('p', { class: 'note' }, 'Padrão: ', e.source) : null,
+      h('button', { class: 'b sm', onclick: () => { Object.assign(e, { ...defs, count: e.count }); if (e.amr) e.amr = defs.amr; ch(); ctx.rerender(); } }, 'Restaurar padrões'),
+    ),
+  );
+}
+
 export function renderDataPanel(ctx: AppCtx): HTMLElement {
   const sc = ctx.scenario;
   const ch = () => ctx.scenarioChanged();
@@ -147,12 +189,17 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
       numField('Nível de serviço', () => sc.serviceLevel * 100, (v) => ((sc.serviceLevel = Math.min(0.999, v / 100)), ch()), { min: 50, max: 99.9, step: 0.5, unit: '%' }),
       numField('Fator de demanda', () => sc.demandFactor, (v) => ((sc.demandFactor = v), ch()), { min: 0.1, max: 5, step: 0.05, unit: '×', title: 'Multiplica toda a demanda – útil para testar crescimento' }),
     ], false),
-    section('Recursos', [
+    section('Equipamentos (catálogo)', [
+      h('p', { class: 'note' }, 'Quantidade 0 = equipamento não usado. Velocidades em m/s. Os padrões vêm de fichas técnicas públicas ou de premissas típicas (a fonte aparece em cada equipamento); edite livremente.'),
+      ...catalog(sc).map((e) => equipmentCard(ctx, e)),
+    ]),
+    section('Pessoas', [
       h('table', null,
         h('thead', null, h('tr', null, ['Recurso', 'Qtd', 'v vazio', 'v carreg.', 'Disp. %', 'R$/h'].map((t) => h('th', null, t)))),
-        h('tbody', null, fleetRows(ctx, 'Empilhadeiras', sc.forklifts), fleetRows(ctx, 'Operários', sc.workers), fleetRows(ctx, 'Conferentes', sc.checkers)),
+        h('tbody', null, fleetRows(ctx, 'Operários', sc.workers), fleetRows(ctx, 'Conferentes', sc.checkers)),
       ),
-      h('p', { class: 'note' }, 'Velocidades em m/s. Disponibilidade modela quebras/paradas (MTTR = 30 min, tempos entre falhas exponenciais).'),
+      numField('Carga manual máx. por operador', () => sc.workers.capacityKg ?? NIOSH_LOAD_KG, (v) => ((sc.workers.capacityKg = sc.checkers.capacityKg = Math.max(1, v)), ch()), { step: 1, min: 1, unit: 'kg', title: 'Padrão: 23 kg, constante de carga da equação de levantamento do NIOSH (condições ideais)' }),
+      h('p', { class: 'note' }, 'Disponibilidade modela quebras/paradas (MTTR = 30 min, tempos entre falhas exponenciais). A carga manual máxima (padrão NIOSH, 23 kg) limita o que uma pessoa levanta sem equipamento.'),
     ]),
     section('Demanda por hora', [
       seriesChart([

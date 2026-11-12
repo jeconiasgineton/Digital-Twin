@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs';
-import type { Dist, DistKind, Layout, LayoutElement, Scenario, SkuSpec } from '../model/types';
+import type { Dist, DistKind, EquipmentSpec, FleetSpec, Layout, LayoutElement, Scenario, SkuSpec } from '../model/types';
 import { defaultScenario } from '../model/defaults';
+import { defaultEquipment, normalizeEquipment } from '../model/equipment';
 import { defaultLayoutParams, generateLayout, newId, type LayoutParams } from '../model/layoutGen';
 import { linearEnds, toWorld } from '../math/spatial';
 
@@ -230,9 +231,10 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     found.push('Recursos');
     for (const r of table(wsR).rows) {
       const t = norm(pick(r, 'tipo', 'recurso'));
-      const spec = t.startsWith('empilh') || t.startsWith('forklift') ? sc.forklifts : t.startsWith('oper') || t.startsWith('pick') || t.startsWith('worker') ? sc.workers : t.startsWith('conf') ? sc.checkers : null;
+      const eqKind = t.startsWith('empilh') || t.startsWith('forklift') ? 'forklift' : t.startsWith('paletei') || t.includes('palletjack') ? 'palletJack' : t.startsWith('transpal') || t.includes('pallettruck') ? 'palletTruck' : t.startsWith('amr') ? 'amr' : null;
+      const spec: FleetSpec | EquipmentSpec | null = eqKind ? (eqKind === 'forklift' ? sc.forklifts : sc.equipment.find((e) => e.kind === eqKind)!) : t.startsWith('oper') || t.startsWith('pick') || t.startsWith('worker') ? sc.workers : t.startsWith('conf') ? sc.checkers : null;
       if (!spec) {
-        if (t) warn(`Recurso "${t}" desconhecido (use empilhadeira, operario ou conferente).`);
+        if (t) warn(`Recurso "${t}" desconhecido (use empilhadeira, paleteira_manual, transpaleteira, amr, operario ou conferente).`);
         continue;
       }
       spec.count = Math.max(0, Math.round(num(pick(r, 'quantidade', 'qtd'), spec.count)!));
@@ -240,7 +242,28 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
       spec.speedLoaded = num(pick(r, 'vel_carregado', 'velocidade_carregado'), spec.speedLoaded)!;
       spec.availability = Math.min(1, Math.max(0.05, frac(pick(r, 'disponibilidade', 'disponibilidade_%'), spec.availability)!));
       spec.costPerHour = num(pick(r, 'custo_hora', 'custo_h', 'custo'), spec.costPerHour)!;
+      const kg = num(pick(r, 'capacidade_kg', 'carga_kg'));
+      if (kg !== undefined) spec.capacityKg = kg;
+      if (eqKind) {
+        const e = spec as EquipmentSpec;
+        e.palletsPerTrip = Math.max(1, Math.round(num(pick(r, 'capacidade_paletes', 'paletes_viagem'), e.palletsPerTrip)!));
+        const yes = (k: string, d: boolean) => { const v = norm(pick(r, k)); return v === '' ? d : ['s', 'sim', '1', 'true', 'x'].includes(v); };
+        e.canLift = yes('eleva', e.canLift);
+        e.needsOperator = yes('operador', e.needsOperator);
+        if (eqKind === 'amr' && e.amr) {
+          const a = e.amr;
+          a.autonomyMin = num(pick(r, 'autonomia_min'), a.autonomyMin)!;
+          a.chargeTriggerFraction = frac(pick(r, 'gatilho_carga'), a.chargeTriggerFraction)!;
+          a.chargeMin = num(pick(r, 'carga_min'), a.chargeMin)!;
+          a.setupMin = num(pick(r, 'setup_min'), a.setupMin)!;
+          a.chargeAtShiftStart = yes('carga_inicio_turno', a.chargeAtShiftStart);
+          a.chargeAtShiftEnd = yes('carga_fim_turno', a.chargeAtShiftEnd);
+          const hs = pick(r, 'carga_horarios');
+          if (hs !== undefined && hs !== null && String(hs).trim() !== '') a.chargeAtHours = String(hs).split(/[;|]/).map((x) => num(x.trim().replace('h', ''))).filter((x): x is number => x !== undefined);
+        }
+      }
     }
+    normalizeEquipment(sc);
   } else warn('Aba "Recursos" não encontrada – usando padrão.');
 
   // ---- Demanda ----
@@ -375,7 +398,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   [
     'DIGITAL TWIN LOGÍSTICO – Planilha de dimensionamento',
     '',
-    'Abas: Parametros (chave/valor), Recursos, Demanda (24 linhas), Operacoes (distribuições de tempo em segundos), SKUs (curva ABC) e Layout (opcional).',
+    'Abas: Parametros (chave/valor), Recursos (empilhadeira, paleteira_manual, transpaleteira, amr, operario, conferente; AMR: Autonomia_min, Gatilho_carga, Carga_min, Setup_min, Carga_inicio_turno/fim_turno, Carga_horarios no formato h;h), Demanda (24 linhas), Operacoes (distribuições de tempo em segundos), SKUs (curva ABC) e Layout (opcional).',
     'Se a aba Layout estiver vazia/ausente, o galpão é gerado a partir dos parâmetros docas_entrada, docas_saida, fileiras_rack, vaos_por_fileira, niveis, esteiras e estacoes.',
     'Distribuições aceitas: constante(a) | triangular(mín, moda, máx) | normal(média, desvio) | lognormal(média, desvio) | exponencial(média) | uniforme(mín, máx).',
     'Layout: X/Z em metros (origem no canto noroeste), Rot em graus (sentido horário). Para parede e esteira (X,Z) é o ponto inicial; demais elementos usam o centro. Tipos de área: rua (Rua = código), endereco_transitorio (Rua, Capacidade), stage, triagem (Capacidade, Prioridade) e carga_amr (Capacidade = vagas). Capacidade vazia = calculada pela área.',
@@ -426,9 +449,14 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   styleHeader(p);
 
   const r = wb.addWorksheet('Recursos');
-  r.columns = [{ header: 'Tipo', width: 16 }, { header: 'Quantidade', width: 12 }, { header: 'Vel_vazio', width: 12 }, { header: 'Vel_carregado', width: 14 }, { header: 'Disponibilidade', width: 16 }, { header: 'Custo_hora', width: 12 }];
-  for (const [t, s] of [['empilhadeira', sc.forklifts], ['operario', sc.workers], ['conferente', sc.checkers]] as const)
-    r.addRow([t, s.count, s.speedEmpty, s.speedLoaded, s.availability, s.costPerHour]);
+  r.columns = ['Tipo', 'Quantidade', 'Vel_vazio', 'Vel_carregado', 'Disponibilidade', 'Custo_hora', 'Capacidade_paletes', 'Capacidade_kg', 'Eleva', 'Operador', 'Autonomia_min', 'Gatilho_carga', 'Carga_min', 'Setup_min', 'Carga_inicio_turno', 'Carga_fim_turno', 'Carga_horarios', 'Fonte'].map((h) => ({ header: h, width: h === 'Fonte' ? 60 : 16 }));
+  const sn = (b: boolean) => (b ? 'S' : 'N');
+  const eqNames: Record<string, string> = { forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' };
+  for (const e of [sc.forklifts, ...(sc.equipment ?? [])])
+    r.addRow([eqNames[e.kind], e.count, e.speedEmpty, e.speedLoaded, e.availability, e.costPerHour, e.palletsPerTrip, e.capacityKg, sn(e.canLift), sn(e.needsOperator),
+      e.amr?.autonomyMin ?? null, e.amr?.chargeTriggerFraction ?? null, e.amr?.chargeMin ?? null, e.amr?.setupMin ?? null, e.amr ? sn(e.amr.chargeAtShiftStart) : null, e.amr ? sn(e.amr.chargeAtShiftEnd) : null, e.amr ? e.amr.chargeAtHours.join(';') : null, e.source ?? null]);
+  for (const [t, s] of [['operario', sc.workers], ['conferente', sc.checkers]] as const)
+    r.addRow([t, s.count, s.speedEmpty, s.speedLoaded, s.availability, s.costPerHour, null, s.capacityKg ?? null]);
   styleHeader(r);
 
   const d = wb.addWorksheet('Demanda');

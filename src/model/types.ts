@@ -72,12 +72,51 @@ export interface Dist {
 }
 
 export interface FleetSpec {
+  /** carga manual máxima por operador (kg) – referência ergonômica (NIOSH: 23 kg); opcional */
+  capacityKg?: number;
   count: number;
   speedEmpty: number; // m/s
   speedLoaded: number; // m/s
   /** disponibilidade operacional (0-1): fração do tempo sem quebra/parada */
   availability: number;
   costPerHour: number;
+}
+
+export type EquipmentKind = 'forklift' | 'palletJack' | 'palletTruck' | 'amr';
+
+/** parâmetros próprios do AMR: autonomia, carregamento e setup */
+export interface AmrSpec {
+  /** autonomia da bateria em operação contínua (min) */
+  autonomyMin: number;
+  /** fração da autonomia consumida que dispara a ida à carga (0,5 = metade da autonomia) */
+  chargeTriggerFraction: number;
+  /** tempo de carregamento na estação (min) */
+  chargeMin: number;
+  /** tempo de setup (min) a cada carregamento: acoplar, calibrar, retomar a missão */
+  setupMin: number;
+  /** também carrega no início / no fim do turno */
+  chargeAtShiftStart: boolean;
+  chargeAtShiftEnd: boolean;
+  /** horários do dia (0–24 h) em que todos os AMR vão carregar, além do gatilho por autonomia */
+  chargeAtHours: number[];
+}
+
+/** equipamento de movimentação do catálogo (empilhadeira, paleteira manual, transpaleteira elétrica, AMR) */
+export interface EquipmentSpec extends FleetSpec {
+  kind: EquipmentKind;
+  name: string;
+  /** paletes transportados por viagem */
+  palletsPerTrip: number;
+  /** capacidade nominal de carga (kg) */
+  capacityKg: number;
+  /** eleva o palete até os níveis do rack (empilhadeira); sem elevação só opera no piso */
+  canLift: boolean;
+  /** precisa de um operador (pessoa) para funcionar; o AMR dispensa */
+  needsOperator: boolean;
+  /** só AMR */
+  amr?: AmrSpec;
+  /** origem dos valores padrão (dado público ou premissa) */
+  source?: string;
 }
 
 export type SlottingPolicy = 'abc' | 'nearest' | 'random';
@@ -105,7 +144,9 @@ export interface Scenario {
   targetWaitP95Min: number;
   serviceLevel: number;
   // recursos
-  forklifts: FleetSpec;
+  forklifts: EquipmentSpec;
+  /** demais equipamentos do catálogo (paleteira manual, transpaleteira elétrica, AMR); quantidade 0 = não usado */
+  equipment: EquipmentSpec[];
   workers: FleetSpec;
   /** pessoas dedicadas a conferência no recebimento (opcional, 0 = ninguém) */
   checkers: FleetSpec;

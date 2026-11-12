@@ -1,4 +1,4 @@
-import type { Layout, ReplicationResult, RunKpis, Scenario, HourSeries } from '../model/types';
+import type { FleetSpec, Layout, ReplicationResult, RunKpis, Scenario, HourSeries } from '../model/types';
 import { Rng, sampleDist } from '../math/rng';
 import { mean, percentile } from '../math/stats';
 import type { Pt } from '../math/spatial';
@@ -87,7 +87,7 @@ export class SimModel {
     const sim = this.sim;
 
     // ---- frota ----
-    const mk = (kind: Agent['kind'], n: number, spec: Scenario['forklifts'], idBase: number): Pool<Agent> => {
+    const mk = (kind: Agent['kind'], n: number, spec: FleetSpec, idBase: number): Pool<Agent> => {
       const items: Agent[] = [];
       const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
       for (let i = 0; i < n; i++) {
