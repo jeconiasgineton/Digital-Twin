@@ -96,3 +96,16 @@ td.ok, .pill.ok { color: var(--ok); } td.warn, .pill.warn { color: var(--warn); 
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 ::-webkit-scrollbar { width: 9px; height: 9px; } ::-webkit-scrollbar-thumb { background: #2b3957; border-radius: 6px; }
 @media (max-width: 1250px) { main { grid-template-columns: 58px 1fr 420px; } }
+
+/* importação de planta */
+.modal-back { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px; }
+.modal { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; width: min(980px, 100%); max-height: 94vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px #000a; }
+.modal header { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.modal header h2 { margin: 0; font-size: 15px; }
+.modal .mbody { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(260px, 1fr); gap: 14px; padding: 14px 16px; overflow-y: auto; min-height: 0; }
+@media (max-width: 760px) { .modal .mbody { grid-template-columns: 1fr; } }
+.modal footer { padding: 10px 16px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; }
+.modal .col { display: grid; gap: 10px; align-content: start; min-width: 0; }
+.modal .prev { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; width: 100%; aspect-ratio: 4 / 3; }
+.modal select, .modal input[type=number] { background: var(--bg3); color: var(--tx); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; font-size: 12px; }
+.modal td .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }

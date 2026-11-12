@@ -1,3 +1,4 @@
+import { importPlant, isPlantFile } from './ui/plantImport';
 import './styles.css';
 import { analyzeCapacity } from './analysis/capacity';
 import { defaultScenario } from './model/defaults';
@@ -287,6 +288,7 @@ window.addEventListener('drop', (e) => {
   const f = e.dataTransfer?.files?.[0];
   if (!f) return;
   if (/\.xlsx?m?$/i.test(f.name)) loadExcelFile(ctx, f);
+  else if (isPlantFile(f.name)) importPlant(ctx, f);
   else if (/\.json$/i.test(f.name)) f.text().then((t) => { try { ctx.loadLayout(JSON.parse(t), true); } catch { toast('JSON inválido', 'err'); } });
 });
 

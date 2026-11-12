@@ -1,6 +1,6 @@
 import type { Layout, LayoutElement } from '../model/types';
 import { defaultLayoutParams, generateLayout, type LayoutParams } from '../model/layoutGen';
-import { parseDxf } from '../io/dxf';
+import { PLANT_ACCEPT, importPlant } from './plantImport';
 import { validate, buildWorld } from '../sim/world';
 import type { AppCtx } from './ctx';
 import { areaCapacity, PALLET_FLOOR_M2 } from '../model/areas';
@@ -116,10 +116,10 @@ export function renderLayoutPanel(ctx: AppCtx): HTMLElement {
       h('button', { class: 'b pri', onclick: () => { ctx.loadLayout(generateLayout(genParams), true); toast('Galpão gerado. Você pode editar tudo livremente.'); } }, 'Gerar layout'),
     ], false),
     section('Planta / desenho existente', [
-      h('p', { class: 'note' }, 'Importe a planta baixa como imagem (PNG/JPG – decalque para você traçar paredes e racks por cima) ou como DXF (as linhas viram paredes automaticamente).'),
+      h('p', { class: 'note' }, 'Importe a planta e o app a interpreta: DXF (por camadas e blocos), PDF vetorial ou imagem. Você confirma o que é cada camada e a escala antes de aplicar. DWG: converta para DXF antes. "Imagem de fundo" apenas coloca a planta por baixo para você traçar à mão.'),
       h('div', { class: 'row' },
+        h('button', { class: 'b pri', onclick: async () => { const f = await pickFile(PLANT_ACCEPT); if (f) importPlant(ctx, f); } }, '📐 Importar planta (DXF · PDF · imagem)'),
         h('button', { class: 'b', onclick: () => importImage(ctx) }, '🖼 Imagem de fundo'),
-        h('button', { class: 'b', onclick: () => importDxf(ctx) }, '📐 Importar DXF'),
         ctx.layout.underlay ? h('button', { class: 'b danger sm', onclick: () => { ctx.view.setUnderlay(undefined); ctx.rerender(); } }, 'Remover fundo') : null,
       ),
       ctx.layout.underlay
@@ -156,17 +156,6 @@ async function importImage(ctx: AppCtx) {
   ctx.view.setUnderlay({ dataUrl, widthM: ctx.layout.floor.width, x: 0, z: 0, opacity: 0.6 });
   ctx.rerender();
   toast('Imagem adicionada. Ajuste a "largura real" para calibrar a escala e trace as paredes por cima.');
-}
-
-async function importDxf(ctx: AppCtx) {
-  const f = await pickFile('.dxf');
-  if (!f) return;
-  const res = parseDxf(await f.text());
-  if (!res.walls.length) return toast('Nenhuma linha/polilinha encontrada no DXF (apenas DXF ASCII com LINE/LWPOLYLINE é suportado).', 'err');
-  const keep = ctx.layout.elements.filter((e) => e.type !== 'wall');
-  const l: Layout = { ...ctx.layout, floor: { width: Math.ceil(res.bounds.w + 4), depth: Math.ceil(res.bounds.d + 4) }, elements: [...keep, ...res.walls] };
-  ctx.loadLayout(l, true);
-  toast(`DXF importado: ${res.walls.length} paredes. Unidade: ${res.unitsDetected}. Dimensões: ${fmt(res.bounds.w, 1)} × ${fmt(res.bounds.d, 1)} m.`);
 }
 
 function saveLayout(ctx: AppCtx) {
