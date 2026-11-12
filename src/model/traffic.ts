@@ -1,5 +1,6 @@
 import type { ArrivalSpec, BreakSpec, Dist, PeopleRole, Scenario, VehicleType, WorkCalendar } from './types';
 import { distMean } from '../math/rng';
+import { meanTrailerDepth } from './receiving';
 
 export const PEOPLE_ROLES: PeopleRole[] = ['forklift', 'worker', 'checker', 'mover'];
 export const ROLE_NAMES: Record<PeopleRole, string> = { forklift: 'Empilhadeiristas', worker: 'Operários', checker: 'Conferentes', mover: 'Operadores de paleteira/transpaleteira' };
@@ -34,17 +35,19 @@ export function effectiveVehicles(sc: Scenario, dir: 'in' | 'out'): VehicleType[
 }
 
 /** médias ponderadas pela participação: paletes por veículo e tempo de docagem (s) */
-export function vehicleMeans(sc: Scenario, dir: 'in' | 'out'): { pallets: number; dockSec: number } {
+export function vehicleMeans(sc: Scenario, dir: 'in' | 'out'): { pallets: number; dockSec: number; depthM: number } {
   const vs = effectiveVehicles(sc, dir);
   const tot = vs.reduce((s, v) => s + Math.max(0, v.share), 0) || 1;
   let pallets = 0;
   let dock = 0;
+  let depth = 0;
   for (const v of vs) {
     const w = Math.max(0, v.share) / tot;
     pallets += w * v.pallets.mean;
     dock += w * distMean(v.dockTurnover);
+    depth += w * meanTrailerDepth(v.pallets.mean, v.trailerLengthM);
   }
-  return { pallets, dockSec: dock };
+  return { pallets, dockSec: dock, depthM: depth };
 }
 
 /** veículos por hora do dia (24 posições) conforme o modo de chegada, antes do fator de demanda */

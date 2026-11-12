@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "template": "tsx scripts/make-template.ts"
+    "template": "tsx scripts/make-template.ts",
+    "template:completo": "tsx scripts/exemplo-completo.ts"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
