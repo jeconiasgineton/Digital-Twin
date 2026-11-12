@@ -376,6 +376,13 @@ export interface RunKpis {
   boxesPerPickerHour: number;
   stockoutPicksPerDay: number; // visitas a endereço vazio
   stockoutTimeLostPerDay: number; // tempo perdido com furos (min/dia)
+  // palete full e expedição a partir do stage
+  fullOrdersPerDay: number;
+  fullPalletsPerDay: number;
+  fullOrderTimeMean: number; // do pedido até o último palete no stage (min)
+  fullNoStockPerDay: number; // paletes pedidos sem estoque
+  stageOutMax: number; // paletes simultâneos no stage de expedição (carga a partir do stage)
+  expeditionWaitMean: number; // espera do caminhão por palete separado (min)
 }
 
 export interface VehicleStat {

@@ -387,6 +387,36 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
         h('p', { class: 'note' }, 'Os endereços de picking são o nível mais baixo dos racks, no formato rua + estante + nível 1 (ex.: A011). O stage de expedição é o elemento "Stage" marcado como expedição no layout. A produtividade sai em caixas por hora de trabalho do separador, calculada a partir dos tempos acima.'),
       ] : [h('p', { class: 'note' }, 'No modo antigo o operador coleta as caixas e as leva à esteira. Escolha "Picking por palete" para simular a rota, a leitura de endereço, o limite do palete e os furos de estoque.')]),
     ], false),
+    section('Separação de palete full e carga do caminhão', [
+      h('p', { class: 'note' }, 'Palete full: a empilhadeira retira o palete inteiro do endereço e o leva ao stage de expedição. O pedido é definido por quantidade de paletes e percentual das curvas A, B e C.'),
+      numField('Pedidos de palete full por hora', () => sc.picking.full.ordersPerHour, (v) => ((sc.picking.full.ordersPerHour = Math.max(0, v)), ch()), { step: 0.5, min: 0, title: '0 = desligado' }),
+      ...(sc.picking.full.ordersPerHour > 0 ? [
+        numField('Paletes por pedido (média)', () => sc.picking.full.palletsPerOrder.mean, (v) => ((sc.picking.full.palletsPerOrder.mean = Math.max(1, v)), ch()), { step: 1, min: 1 }),
+        numField('… desvio', () => sc.picking.full.palletsPerOrder.sd, (v) => ((sc.picking.full.palletsPerOrder.sd = Math.max(0, v)), ch()), { step: 0.5, min: 0 }),
+        numField('Paletes da curva A', () => sc.picking.full.abc.a * 100, (v) => ((sc.picking.full.abc.a = Math.max(0, v / 100)), ch()), { step: 5, min: 0, max: 100, unit: '%' }),
+        numField('Paletes da curva B', () => sc.picking.full.abc.b * 100, (v) => ((sc.picking.full.abc.b = Math.max(0, v / 100)), ch()), { step: 5, min: 0, max: 100, unit: '%' }),
+        numField('Paletes da curva C', () => sc.picking.full.abc.c * 100, (v) => ((sc.picking.full.abc.c = Math.max(0, v / 100)), ch()), { step: 5, min: 0, max: 100, unit: '%' }),
+        selField('Do endereço ao stage', () => sc.picking.full.mode, (v) => ((sc.picking.full.mode = v), ch(), ctx.rerender()), [['direct', 'Direta: a empilhadeira leva ao stage'], ['phased', 'Faseada: empilhadeira baixa na rua; outro equipamento leva ao stage']]),
+        ...(sc.picking.full.mode === 'phased' ? [
+          h('b', null, 'Equipamentos que levam da rua ao stage'),
+          h('div', { class: 'row' }, (['palletJack', 'palletTruck', 'amr'] as const).map((k) =>
+            h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.picking.full.step1With.includes(k), onchange: (ev: Event) => {
+              sc.picking.full.step1With = (ev.target as HTMLInputElement).checked ? [...new Set([...sc.picking.full.step1With, k])] : sc.picking.full.step1With.filter((x) => x !== k);
+              ch(); ctx.rerender();
+            } }), EQUIPMENT_NAMES[k]))),
+        ] : []),
+      ] : []),
+      h('b', null, 'Carga do caminhão de expedição'),
+      selField('O caminhão carrega…', () => sc.picking.loadFrom, (v) => ((sc.picking.loadFrom = v), ch(), ctx.rerender()), [['rack', 'Direto do rack (padrão)'], ['stage', 'Do stage de expedição (paletes já separados)']]),
+      ...(sc.picking.loadFrom === 'stage' ? [
+        h('div', { class: 'row' }, (['forklift', 'palletJack', 'palletTruck', 'amr'] as const).map((k) =>
+          h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.picking.loadWith.includes(k), onchange: (ev: Event) => {
+            sc.picking.loadWith = (ev.target as HTMLInputElement).checked ? [...new Set([...sc.picking.loadWith, k])] : sc.picking.loadWith.filter((x) => x !== k);
+            ch(); ctx.rerender();
+          } }), EQUIPMENT_NAMES[k]))),
+        h('p', { class: 'note' }, 'O caminhão espera os paletes separados (picking por palete e palete full) e a capacidade do stage de expedição limita o que pode aguardar ali. Sem paletes separados, o caminhão fica parado na doca.'),
+      ] : []),
+    ], false),
     section('Recebimento: descarga, avarias e triagem', [
       h('b', null, 'Equipamentos que podem descarregar o baú'),
       h('p', { class: 'note' }, 'O equipamento disponível no momento é acionado. Só vale para os que têm quantidade maior que 0 no catálogo.'),

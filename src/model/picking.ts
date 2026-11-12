@@ -1,4 +1,4 @@
-import type { Dist } from './types';
+import type { Dist, EquipmentKind } from './types';
 
 /**
  * Separação picking por palete: o operador percorre uma rota de endereços, lê o código de cada endereço,
@@ -7,6 +7,20 @@ import type { Dist } from './types';
 
 export type PickRoute = 'u' | 'zigzag';
 export const ROUTE_LABEL: Record<PickRoute, string> = { u: 'Em U (um lado na ida, o outro na volta)', zigzag: 'Zigue-zague (caixa mais próxima, qualquer lado)' };
+
+/** separação de palete full: a empilhadeira retira o palete inteiro do endereço e o leva ao stage de expedição */
+export interface FullPalletSpec {
+  /** pedidos de palete full por hora (Poisson, em todas as horas do turno); 0 = desligado */
+  ordersPerHour: number;
+  /** paletes por pedido */
+  palletsPerOrder: { mean: number; sd: number };
+  /** percentual dos paletes das curvas A, B e C */
+  abc: { a: number; b: number; c: number };
+  /** direta: empilhadeira do endereço ao stage · faseada: empilhadeira baixa na rua e um equipamento sem elevação leva ao stage */
+  mode: 'direct' | 'phased';
+  /** faseada: equipamentos que levam o palete da rua ao stage (o disponível é acionado) */
+  step1With: EquipmentKind[];
+}
 
 export interface PickingSpec {
   /** legacy: fluxo antigo (esteira e embalagem) · pallet: separação por palete com rota */
@@ -22,6 +36,12 @@ export interface PickingSpec {
    * só as faces de picking marcadas nos racks, ou posições específicas definidas pelo usuário.
    */
   area: { mode: 'floor' | 'faces' | 'custom'; /** níveis a partir do chão (floor/faces) */ levels: number; /** endereços (custom) */ addresses: string[] };
+  /** palete full (pedidos por quantidade de paletes) */
+  full: FullPalletSpec;
+  /** de onde o caminhão de expedição carrega: direto do rack (padrão) ou do stage de expedição (paletes separados) */
+  loadFrom: 'rack' | 'stage';
+  /** quem leva o palete do stage ao caminhão (loadFrom = stage) */
+  loadWith: EquipmentKind[];
   route: PickRoute;
   /** separadores por pedido (o pedido é dividido por ruas) */
   pickersPerOrder: number;
@@ -53,6 +73,9 @@ export const defaultPicking = (): PickingSpec => ({
   abc: { a: 0.7, b: 0.2, c: 0.1 },
   palletLimit: { mean: 60, sd: 8 },
   area: { mode: 'floor', levels: 1, addresses: [] },
+  full: { ordersPerHour: 0, palletsPerOrder: { mean: 3, sd: 1 }, abc: { a: 0.7, b: 0.2, c: 0.1 }, mode: 'direct', step1With: ['palletTruck', 'palletJack', 'amr'] },
+  loadFrom: 'rack',
+  loadWith: ['forklift'],
   route: 'u',
   pickersPerOrder: 1,
   scan: { kind: 'constant', a: 3 },

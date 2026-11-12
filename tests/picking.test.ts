@@ -189,7 +189,8 @@ describe('planilha, validações e interface de dados da separação', () => {
     const { exportTemplate, importWorkbook } = await import('../src/io/excel');
     const sc = defaultScenario();
     sc.picking = {
-      mode: 'pallet', boxesPerOrder: { mean: 100, sd: 15 }, abc: { a: 0.5, b: 0.3, c: 0.2 }, palletLimit: { mean: 80, sd: 5 }, area: { mode: 'custom', levels: 2, addresses: ['A011', 'B012'] }, route: 'zigzag', pickersPerOrder: 3,
+      mode: 'pallet', boxesPerOrder: { mean: 100, sd: 15 }, abc: { a: 0.5, b: 0.3, c: 0.2 }, palletLimit: { mean: 80, sd: 5 }, area: { mode: 'custom', levels: 2, addresses: ['A011', 'B012'] },
+      full: { ordersPerHour: 2, palletsPerOrder: { mean: 4, sd: 1 }, abc: { a: 0.6, b: 0.3, c: 0.1 }, mode: 'phased', step1With: ['palletJack'] }, loadFrom: 'stage', loadWith: ['forklift', 'palletTruck'], route: 'zigzag', pickersPerOrder: 3,
       scan: { kind: 'constant', a: 4 }, pick: { kind: 'triangular', a: 2, b: 6, c: 10 }, place: { kind: 'constant', a: 3 },
       stockout: { mode: 'positions', pct: 0.05, addresses: ['A015', 'B023'], delay: { kind: 'constant', a: 240 } },
     };
@@ -281,5 +282,114 @@ describe('área de picking', () => {
     expect(p[0].length).toBeCloseTo(n * 0.2, -1);
     expect(p[1].length).toBeCloseTo(n * 0.3, -1);
     expect(p[2].length).toBeCloseTo(n * 0.5, -1);
+  });
+});
+
+describe('palete full e carga do caminhão a partir do stage', () => {
+  const withFull = (extra?: (sc: Scenario) => void): Scenario => {
+    const sc = base();
+    sc.picking.mode = 'legacy';
+    sc.ordersPerHour = new Array(24).fill(0);
+    sc.picking.full = { ordersPerHour: 4, palletsPerOrder: { mean: 3, sd: 0 }, abc: { a: 0.7, b: 0.2, c: 0.1 }, mode: 'direct', step1With: ['palletTruck', 'palletJack', 'amr'] };
+    extra?.(sc);
+    return sc;
+  };
+  it('Store: quem pede espera até haver item, na ordem de chegada', async () => {
+    const { Sim, Store } = await import('../src/sim/engine');
+    const sim = new Sim();
+    const st = new Store<number>(sim);
+    const got: number[] = [];
+    const taker = function* () {
+      const r = st.take();
+      yield r.signal;
+      got.push(r.res.item!);
+    };
+    sim.spawn(taker());
+    sim.spawn(taker());
+    sim.schedule(10, () => st.put(1));
+    sim.schedule(20, () => st.put(2));
+    st.put(0); // já havia um item antes de alguém pedir? não: pedidos ainda não rodaram
+    sim.runUntil(100);
+    expect(got).toEqual([0, 1]);
+    expect(st.size).toBe(1); // o item 2 sobrou
+  });
+  it('palete full direto: pedidos por quantidade de paletes chegam ao stage', () => {
+    const { k } = run(withFull());
+    expect(k.fullOrdersPerDay).toBeGreaterThan(30);
+    expect(k.fullPalletsPerDay / k.fullOrdersPerDay).toBeGreaterThan(2.7);
+    expect(k.fullPalletsPerDay / k.fullOrdersPerDay).toBeLessThanOrEqual(3.05); // 3 paletes por pedido (os últimos em andamento)
+    expect(k.fullOrderTimeMean).toBeGreaterThan(0.3);
+  });
+  it('sem estoque: palete full pedido não é separado e é contado', () => {
+    const { k } = run(withFull((sc) => { sc.initialOccupancy = 0; }));
+    expect(k.fullNoStockPerDay).toBeGreaterThan(50);
+    expect(k.fullPalletsPerDay).toBe(0);
+  });
+  it('faseado: a empilhadeira baixa na rua e a transpaleteira leva ao stage', () => {
+    const { m, k } = run(withFull((sc) => {
+      sc.picking.full.mode = 'phased';
+      sc.equipment[1].count = 3;
+    }));
+    expect(k.fullPalletsPerDay).toBeGreaterThan(30);
+    expect(k.utilMover).toBeGreaterThan(0);
+    expect(k.transitOccupancyMax).toBeGreaterThan(0);
+    expect(m.eqPools.palletTruck.items.some((a) => a.busyTime > 0)).toBe(true);
+  });
+  it('faseado sem endereços transitórios: cai para a direta, sem travar', () => {
+    const l: Layout = { ...layout, elements: layout.elements.filter((e) => e.type !== 'transit') };
+    const { k } = run(withFull((sc) => { sc.picking.full.mode = 'phased'; sc.equipment[1].count = 2; }), l);
+    expect(k.fullPalletsPerDay).toBeGreaterThan(30);
+  });
+  it('caminhão carrega do stage: só sai o que foi separado e ele espera os paletes', () => {
+    const sc = withFull((s) => {
+      s.picking.loadFrom = 'stage';
+      s.outboundTrucksPerHour = new Array(24).fill(2); // 2 caminhões/h de ~16 paletes: bem mais que o separado
+    });
+    const { k } = run(sc);
+    expect(k.palletsOutPerDay).toBeGreaterThan(20);
+    expect(k.palletsOutPerDay).toBeLessThanOrEqual(k.fullPalletsPerDay + 1); // nunca carrega mais do que foi separado
+    expect(k.expeditionWaitMean).toBeGreaterThan(1); // os caminhões esperam paletes
+    expect(k.stageOutMax).toBeGreaterThan(0);
+  });
+  it('picking por palete também abastece o stage de expedição', () => {
+    const sc = base();
+    sc.picking.loadFrom = 'stage';
+    sc.outboundTrucksPerHour = new Array(24).fill(1);
+    const { k } = run(sc);
+    expect(k.pickPalletsPerDay).toBeGreaterThan(100);
+    expect(k.palletsOutPerDay).toBeGreaterThan(5);
+    expect(k.palletsOutPerDay).toBeLessThanOrEqual(k.pickPalletsPerDay + 1);
+  });
+  it('capacidade do stage de expedição limita os paletes esperando (e freia a separação)', () => {
+    const cap = (n: number) => {
+      const l: Layout = JSON.parse(JSON.stringify(layout));
+      l.elements.find((e) => e.type === 'stage' && e.stageKind === 'out')!.capacity = n;
+      const sc = withFull((s) => { s.picking.loadFrom = 'stage'; s.outboundTrucksPerHour = new Array(24).fill(0); });
+      return run(sc, l).k;
+    };
+    const apertado = cap(3);
+    const folgado = cap(500);
+    expect(apertado.stageOutMax).toBeLessThanOrEqual(3);
+    expect(folgado.stageOutMax).toBeGreaterThan(apertado.stageOutMax);
+    expect(apertado.fullPalletsPerDay).toBeLessThan(folgado.fullPalletsPerDay);
+  });
+  it('o padrão (carga do rack) segue igual e não usa o stage', () => {
+    const { k } = run(withFull());
+    expect(k.stageOutMax).toBe(0);
+    expect(k.expeditionWaitMean).toBe(0);
+  });
+  it('validações do palete full e da carga a partir do stage', async () => {
+    const { validate } = await import('../src/sim/world');
+    const sc = defaultScenario();
+    sc.picking.loadFrom = 'stage';
+    expect(validate(layout, sc).some((i) => i.level === 'erro' && /sem fonte de paletes/.test(i.msg))).toBe(true);
+    sc.picking.full.ordersPerHour = 2;
+    expect(validate(layout, sc).some((i) => /sem fonte de paletes/.test(i.msg))).toBe(false);
+    sc.picking.full.mode = 'phased';
+    expect(validate(layout, sc).some((i) => /sem equipamento de etapa 2/.test(i.msg))).toBe(true);
+    const l: Layout = { ...layout, elements: layout.elements.filter((e) => !(e.type === 'stage' && e.stageKind === 'out')) };
+    expect(validate(l, sc).some((i) => /sem stage de expedição/.test(i.msg))).toBe(true);
+    sc.picking.loadWith = [];
+    expect(validate(layout, sc).some((i) => i.level === 'erro' && /nenhum equipamento permitido/.test(i.msg))).toBe(true);
   });
 });

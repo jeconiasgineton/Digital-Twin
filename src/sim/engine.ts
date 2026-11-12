@@ -336,6 +336,33 @@ export class Pool<T extends PoolItem> {
   }
 }
 
+/** Fila de itens prontos: quem pede espera até haver um item (ex.: caminhão esperando paletes separados). */
+export class Store<T> {
+  items: T[] = [];
+  private waiting: { signal: Signal; res: { item?: T } }[] = [];
+  constructor(private sim: Sim) {}
+  put(item: T) {
+    const w = this.waiting.shift();
+    if (w) {
+      w.res.item = item;
+      w.signal.fire();
+    } else this.items.push(item);
+  }
+  /** devolve um sinal (a esperar com yield) e o resultado, preenchido quando houver item */
+  take(): { signal: Signal; res: { item?: T } } {
+    const signal = new Signal(this.sim);
+    const res: { item?: T } = {};
+    if (this.items.length) {
+      res.item = this.items.shift();
+      signal.fire();
+    } else this.waiting.push({ signal, res });
+    return { signal, res };
+  }
+  get size() {
+    return this.items.length;
+  }
+}
+
 export class Sim {
   now = 0;
   private heap = new Heap();

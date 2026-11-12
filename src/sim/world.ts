@@ -240,6 +240,16 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     else if (!codes.includes(a) && aisles.length) out.push({ level: 'aviso', msg: `O endereço transitório "${t.name}" aponta para a rua "${a}", que não existe.` });
   }
   out.push(...validateEquipment(sc, c('charger')));
+  const fullOn = sc.picking.full.ordersPerHour > 0;
+  const outStages = layout.elements.filter((e) => e.type === 'stage' && e.stageKind === 'out').length;
+  if (fullOn && outStages === 0) out.push({ level: 'aviso', msg: 'Palete full sem stage de expedição: os paletes serão levados à doca de saída (use a ferramenta "Stage" e marque "Expedição").' });
+  if (fullOn && sc.picking.full.mode === 'phased' && !sc.picking.full.step1With.some((k) => k !== 'forklift' && (sc.equipment.find((e) => e.kind === k)?.count ?? 0) > 0))
+    out.push({ level: 'aviso', msg: 'Palete full faseado sem equipamento de etapa 2 (paleteira/transpaleteira/AMR com quantidade > 0): a empilhadeira fará o transporte do stage.' });
+  if (sc.picking.loadFrom === 'stage') {
+    if (!fullOn && sc.picking.mode !== 'pallet') out.push({ level: 'erro', msg: 'Carga a partir do stage sem fonte de paletes: ative a separação por palete ou o palete full, senão os caminhões de expedição ficam parados na doca.' });
+    if (outStages === 0) out.push({ level: 'aviso', msg: 'Carga a partir do stage, mas o layout não tem stage de expedição (a espera não será limitada).' });
+    if (sc.picking.loadWith.length === 0) out.push({ level: 'erro', msg: 'Carga a partir do stage sem nenhum equipamento permitido.' });
+  }
   if (sc.picking.mode === 'pallet') {
     if (layout.elements.filter((e) => e.type === 'stage' && e.stageKind === 'out').length === 0)
       out.push({ level: 'aviso', msg: 'Separação por palete sem stage de expedição: os paletes serão levados à doca de saída (use a ferramenta "Stage" e marque "Expedição").' });

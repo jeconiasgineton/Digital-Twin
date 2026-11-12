@@ -272,6 +272,23 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
       if (kinds.length) sc.storage.step1With = kinds;
       else warn('armazenagem_etapa1_equipamentos: use paleteira_manual, transpaleteira e/ou amr.');
     }
+    const kindsOf = (t: unknown): EquipmentKind[] => [...new Set(String(t ?? '').split(/[;|,]/).map((x) => norm(x)).map((x) => (x.startsWith('empilh') ? 'forklift' : x.startsWith('paletei') ? 'palletJack' : x.startsWith('transpal') ? 'palletTruck' : x.startsWith('amr') ? 'amr' : null)).filter((x): x is EquipmentKind => !!x))];
+    const full = sc.picking.full;
+    setN('palete_full_pedidos_hora', (v) => (full.ordersPerHour = Math.max(0, v)));
+    setN('palete_full_paletes_media', (v) => (full.palletsPerOrder.mean = Math.max(1, v)));
+    setN('palete_full_paletes_desvio', (v) => (full.palletsPerOrder.sd = Math.max(0, v)));
+    for (const [k, key] of [['palete_full_curva_a_pct', 'a'], ['palete_full_curva_b_pct', 'b'], ['palete_full_curva_c_pct', 'c']] as const) {
+      const f = frac(g(k));
+      if (f !== undefined) full.abc[key] = Math.max(0, f);
+    }
+    const fmode = norm(g('palete_full_modo'));
+    if (fmode) full.mode = fmode.startsWith('fas') || fmode === 'phased' ? 'phased' : 'direct';
+    const fk = kindsOf(g('palete_full_etapa2_equipamentos'));
+    if (fk.length) full.step1With = fk;
+    const lf = norm(g('expedicao_origem'));
+    if (lf) sc.picking.loadFrom = lf.startsWith('stage') ? 'stage' : 'rack';
+    const lw = kindsOf(g('expedicao_equipamentos'));
+    if (lw.length) sc.picking.loadWith = lw;
     const am = norm(g('picking_area_modo'));
     if (am) sc.picking.area.mode = am.startsWith('perso') || am.startsWith('custom') ? 'custom' : am.startsWith('face') ? 'faces' : 'floor';
     setN('picking_area_niveis', (v) => (sc.picking.area.levels = Math.max(1, Math.round(v))));
@@ -637,6 +654,16 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['armazenagem_modo', sc.storage.mode === 'phased' ? 'faseada' : 'direta', 'direta (empilhadeira do stage ao endereço) | faseada (etapa 1 sem elevação até a rua; etapa 2 elevação)'],
     ['armazenagem_etapa1_equipamentos', sc.storage.step1With.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Faseada: equipamentos da etapa 1, separados por ; (o disponível é acionado)'],
     ['separacao_modo', sc.picking.mode === 'pallet' ? 'palete' : 'legado', 'legado (esteira e embalagem) | palete (rota, leitura de endereço, limite do palete, furos)'],
+    ['palete_full_pedidos_hora', sc.picking.full.ordersPerHour, 'Palete full: pedidos por hora (0 = desligado)'],
+    ['palete_full_paletes_media', sc.picking.full.palletsPerOrder.mean, 'Palete full: paletes por pedido – média'],
+    ['palete_full_paletes_desvio', sc.picking.full.palletsPerOrder.sd, 'Palete full: paletes por pedido – desvio'],
+    ['palete_full_curva_a_pct', sc.picking.full.abc.a, 'Palete full: percentual dos paletes da curva A'],
+    ['palete_full_curva_b_pct', sc.picking.full.abc.b, 'Palete full: percentual da curva B'],
+    ['palete_full_curva_c_pct', sc.picking.full.abc.c, 'Palete full: percentual da curva C'],
+    ['palete_full_modo', sc.picking.full.mode === 'phased' ? 'faseada' : 'direta', 'direta (empilhadeira do endereço ao stage) | faseada (empilhadeira baixa na rua; outro equipamento leva ao stage)'],
+    ['palete_full_etapa2_equipamentos', sc.picking.full.step1With.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Palete full faseado: equipamentos que levam da rua ao stage'],
+    ['expedicao_origem', sc.picking.loadFrom, 'De onde o caminhão carrega: rack | stage (paletes já separados)'],
+    ['expedicao_equipamentos', sc.picking.loadWith.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Carga a partir do stage: equipamentos que levam o palete ao caminhão'],
     ['picking_area_modo', sc.picking.area.mode === 'custom' ? 'personalizada' : sc.picking.area.mode === 'faces' ? 'faces' : 'chao', 'Área de picking: chao (endereços próximos ao chão) | faces (racks com face de picking) | personalizada (lista de endereços)'],
     ['picking_area_niveis', sc.picking.area.levels, 'Níveis a partir do chão (modos chao e faces)'],
     ['picking_area_enderecos', sc.picking.area.addresses.join(', '), 'Modo personalizada: endereços da área de picking (ex.: A011, B021)'],
