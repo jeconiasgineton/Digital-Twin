@@ -1,7 +1,8 @@
 import ExcelJS from 'exceljs';
-import type { Dist, DistKind, EquipmentSpec, FleetSpec, Layout, LayoutElement, Scenario, SkuSpec } from '../model/types';
+import type { ArrivalSpec, BreakSpec, Dist, DistKind, EquipmentSpec, FleetSpec, PeopleRole, VehicleType, Layout, LayoutElement, Scenario, SkuSpec } from '../model/types';
 import { defaultScenario } from '../model/defaults';
 import { defaultEquipment, normalizeEquipment } from '../model/equipment';
+import { PEOPLE_ROLES } from '../model/traffic';
 import { defaultLayoutParams, generateLayout, newId, type LayoutParams } from '../model/layoutGen';
 import { linearEnds, toWorld } from '../math/spatial';
 
@@ -157,6 +158,22 @@ const ELEMENT_ALIASES: Record<string, LayoutElement['type']> = {
   carga_amr: 'charger', carregador: 'charger', carga: 'charger', charger: 'charger',
 };
 
+/** hora do dia: 6,5 | "06:30" | "6h30" → 6.5 */
+function parseHour(v: unknown): number | undefined {
+  const s = String(v ?? '').trim().toLowerCase();
+  const m = s.match(/^(\d{1,2})\s*[:h]\s*(\d{0,2})$/);
+  if (m) return +m[1] + (m[2] ? +m[2] / 60 : 0);
+  const n = num(s);
+  return n === undefined ? undefined : n;
+}
+
+const ROLE_ALIASES: Record<string, PeopleRole> = {
+  empilhadeira: 'forklift', empilhadeiras: 'forklift', empilhadeirista: 'forklift', empilhadeiristas: 'forklift', forklift: 'forklift',
+  operario: 'worker', operarios: 'worker', picking: 'worker', worker: 'worker',
+  conferente: 'checker', conferentes: 'checker', checker: 'checker',
+};
+const ROLE_NAMES_PT: Record<PeopleRole, string> = { forklift: 'empilhadeira', worker: 'operario', checker: 'conferente' };
+
 export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<ImportResult> {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf as ArrayBuffer);
@@ -214,6 +231,21 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     if (oc !== undefined) sc.initialOccupancy = Math.min(1, Math.max(0, oc));
     setN('permanencia_dias', (v) => (sc.dwellDays = v));
     setN('fator_demanda', (v) => (sc.demandFactor = v));
+    setN('limite_espera_doca_min', (v) => (sc.dockWaitThresholdMin = v), [0, 600]);
+    const amrBreaks = norm(g('amr_trabalha_intervalos'));
+    if (amrBreaks) sc.calendar.amrWorksDuringBreaks = ['s', 'sim', '1', 'true', 'x'].includes(amrBreaks);
+    for (const [dir, spec] of [['entrada', sc.arrivalsIn], ['saida', sc.arrivalsOut]] as [string, ArrivalSpec][]) {
+      const modo = norm(g(`chegada_${dir}_modo`));
+      if (modo) spec.mode = modo.startsWith('interv') || modo === 'fixo' || modo === 'fixed' ? 'fixed' : modo.startsWith('agend') || modo === 'scheduled' ? 'scheduled' : 'poisson';
+      setN(`chegada_${dir}_intervalo_min`, (v) => (spec.intervalMin = Math.max(0.1, v)));
+      const hs = g(`chegada_${dir}_horarios`);
+      if (hs !== undefined && hs !== null && String(hs).trim() !== '') spec.scheduleHours = String(hs).split(/[;|]/).map((x) => parseHour(x)).filter((x): x is number => x !== undefined && x >= 0 && x < 24);
+      const dp = frac(g(`atraso_${dir}_prob`));
+      if (dp !== undefined) spec.delayProb = Math.min(1, Math.max(0, dp));
+      const dm = num(g(`atraso_${dir}_media_min`));
+      const ds = num(g(`atraso_${dir}_desvio_min`));
+      if (dm !== undefined) spec.delayMin = { kind: 'lognormal', a: Math.max(0.1, dm), b: Math.max(0, ds ?? spec.delayMin.b ?? 0) };
+    }
     const pol = norm(g('enderecamento'));
     if (pol) sc.slotting = pol.startsWith('abc') ? 'abc' : pol.startsWith('prox') ? 'nearest' : pol.startsWith('alea') || pol.startsWith('rand') ? 'random' : sc.slotting;
     setN('docas_entrada', (v) => (gp.docksIn = Math.round(v)));
@@ -265,6 +297,50 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     }
     normalizeEquipment(sc);
   } else warn('Aba "Recursos" não encontrada – usando padrão.');
+
+  // ---- Veículos ----
+  const wsV = findSheet(wb, ['Veiculos', 'Veículos', 'Vehicles']);
+  if (wsV) {
+    const vs: VehicleType[] = [];
+    for (const r of table(wsV).rows) {
+      const name = String(pick(r, 'nome', 'tipo') ?? '').trim();
+      if (!name) continue;
+      const pm = num(pick(r, 'paletes_media'), 12)!;
+      vs.push({
+        id: `v${vs.length + 1}`, name, share: Math.max(0, frac(pick(r, 'participacao', 'percentual'), 1)!),
+        dockTurnover: parseDist(pick(r, 'distribuicao') ?? 'constante', pick(r, 'p1', 'param1') ?? 180, pick(r, 'p2', 'param2'), pick(r, 'p3', 'param3'), sc.ops.dockTurnover, warn, `manobra de ${name}`),
+        pallets: { mean: pm, sd: num(pick(r, 'paletes_desvio'), 0)!, max: num(pick(r, 'paletes_max'), Math.max(pm, 1))! },
+        trailerLengthM: num(pick(r, 'comprimento_bau_m', 'bau_m'), 14)!,
+      });
+    }
+    if (vs.length) {
+      sc.vehicleTypes = vs;
+      found.push('Veículos');
+    }
+  }
+
+  // ---- Intervalos ----
+  const wsB = findSheet(wb, ['Intervalos', 'Calendario', 'Calendário', 'Breaks']);
+  if (wsB) {
+    const bs: BreakSpec[] = [];
+    for (const r of table(wsB).rows) {
+      const start = parseHour(pick(r, 'inicio', 'inicio_h', 'hora'));
+      const dur = num(pick(r, 'duracao_min', 'duracao'));
+      if (start === undefined || dur === undefined) continue;
+      const grRaw = String(pick(r, 'grupos', 'grupo') ?? '');
+      const gr = norm(grRaw);
+      const groups = !gr || gr.startsWith('todos') || gr === 'all' ? [...PEOPLE_ROLES] : [...new Set(grRaw.split(/[;|,]/).map((x) => ROLE_ALIASES[norm(x)]).filter(Boolean))];
+      if (!groups.length) {
+        warn(`Intervalo "${pick(r, 'nome')}": grupos inválidos (use todos, empilhadeira, operario, conferente).`);
+        continue;
+      }
+      const esc = norm(pick(r, 'escalonamento', 'saida'));
+      const stagger = esc.startsWith('metade') || esc === 'half' ? 'half' : esc.startsWith('perc') ? 'percent' : 'all';
+      bs.push({ name: String(pick(r, 'nome') ?? 'Intervalo'), startHour: start % 24, durationMin: Math.max(0, dur), groups, stagger, percentPerWave: Math.min(100, Math.max(1, num(pick(r, 'percentual', 'percentual_por_vez'), 50)!)) });
+    }
+    sc.calendar.breaks = bs;
+    if (bs.length) found.push('Intervalos');
+  }
 
   // ---- Demanda ----
   const wsD = findSheet(wb, ['Demanda', 'Demand']);
@@ -398,7 +474,9 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   [
     'DIGITAL TWIN LOGÍSTICO – Planilha de dimensionamento',
     '',
-    'Abas: Parametros (chave/valor), Recursos (empilhadeira, paleteira_manual, transpaleteira, amr, operario, conferente; AMR: Autonomia_min, Gatilho_carga, Carga_min, Setup_min, Carga_inicio_turno/fim_turno, Carga_horarios no formato h;h), Demanda (24 linhas), Operacoes (distribuições de tempo em segundos), SKUs (curva ABC) e Layout (opcional).',
+    'Abas: Parametros (chave/valor), Recursos (empilhadeira, paleteira_manual, transpaleteira, amr, operario, conferente; AMR: Autonomia_min, Gatilho_carga, Carga_min, Setup_min, Carga_inicio_turno/fim_turno, Carga_horarios no formato h;h), Veiculos (tipos de veículo), Intervalos (pausas), Demanda (24 linhas), Operacoes (distribuições de tempo em segundos), SKUs (curva ABC) e Layout (opcional).',
+    'Veiculos: Manobra/docagem em segundos (Distribuicao + P1..P3, ex.: constante 180 = 3 min); Participacao em % da frota. Sem linhas = um tipo único com os parâmetros gerais. Intervalos: Inicio = hora do dia (12 ou 12:30); Grupos = todos ou empilhadeira;operario;conferente; Escalonamento = todos (juntos) | metade (metade por vez) | percentual (use a coluna Percentual).',
+    'Chegadas (Parametros): chegada_entrada_modo / chegada_saida_modo = aleatorio | intervalo | agendado, com intervalo_min, horarios (h;h) e atraso_*_prob/media_min/desvio_min.',
     'Se a aba Layout estiver vazia/ausente, o galpão é gerado a partir dos parâmetros docas_entrada, docas_saida, fileiras_rack, vaos_por_fileira, niveis, esteiras e estacoes.',
     'Distribuições aceitas: constante(a) | triangular(mín, moda, máx) | normal(média, desvio) | lognormal(média, desvio) | exponencial(média) | uniforme(mín, máx).',
     'Layout: X/Z em metros (origem no canto noroeste), Rot em graus (sentido horário). Para parede e esteira (X,Z) é o ponto inicial; demais elementos usam o centro. Tipos de área: rua (Rua = código), endereco_transitorio (Rua, Capacidade), stage, triagem (Capacidade, Prioridade) e carga_amr (Capacidade = vagas). Capacidade vazia = calculada pela área.',
@@ -439,6 +517,20 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['permanencia_dias', sc.dwellDays, 'Permanência média do palete no estoque (dias)'],
     ['enderecamento', sc.slotting === 'abc' ? 'abc' : sc.slotting === 'nearest' ? 'proximo' : 'aleatorio', 'abc | proximo | aleatorio'],
     ['fator_demanda', sc.demandFactor, 'Multiplicador global da demanda (sensibilidade)'],
+    ['limite_espera_doca_min', sc.dockWaitThresholdMin, 'Espera na doca acima da qual o caminhão conta como gargalo (min)'],
+    ['amr_trabalha_intervalos', sc.calendar.amrWorksDuringBreaks ? 'S' : 'N', 'S = AMR continuam trabalhando nos intervalos das pessoas'],
+    ...(['entrada', 'saida'] as const).flatMap((dir): [string, any, string][] => {
+      const a = dir === 'entrada' ? sc.arrivalsIn : sc.arrivalsOut;
+      const lbl = dir === 'entrada' ? 'recebimento' : 'expedição';
+      return [
+        [`chegada_${dir}_modo`, a.mode === 'fixed' ? 'intervalo' : a.mode === 'scheduled' ? 'agendado' : 'aleatorio', `Chegadas (${lbl}): aleatorio (taxa por hora, aba Demanda) | intervalo (a cada X min) | agendado (horários)`],
+        [`chegada_${dir}_intervalo_min`, a.intervalMin, `Modo intervalo: minutos entre chegadas (${lbl})`],
+        [`chegada_${dir}_horarios`, a.scheduleHours.join(';'), `Modo agendado: horários do dia separados por ; (ex.: 6;6,5;7 ou 06:30;07:00)`],
+        [`atraso_${dir}_prob`, a.delayProb, `Probabilidade de atraso (${lbl}); vale para intervalo/agendado`],
+        [`atraso_${dir}_media_min`, a.delayMin.a, 'Atraso médio quando atrasado (min, lognormal)'],
+        [`atraso_${dir}_desvio_min`, a.delayMin.b ?? 0, 'Desvio-padrão do atraso (min)'],
+      ];
+    }),
   ];
   if (layout) {
     const cnt = (t: string) => layout.elements.filter((e) => e.type === t).length;
@@ -447,6 +539,20 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   }
   rows.forEach((r) => p.addRow(r));
   styleHeader(p);
+
+  const v = wb.addWorksheet('Veiculos');
+  v.columns = ['Nome', 'Participacao', 'Distribuicao', 'P1', 'P2', 'P3', 'Paletes_media', 'Paletes_desvio', 'Paletes_max', 'Comprimento_bau_m'].map((h) => ({ header: h, width: 16 }));
+  for (const t of sc.vehicleTypes) {
+    const d = distRow(t.name, t.dockTurnover, '');
+    v.addRow([t.name, t.share, d[1], d[2], d[3], d[4], t.pallets.mean, t.pallets.sd, t.pallets.max, t.trailerLengthM]);
+  }
+  styleHeader(v);
+
+  const ib = wb.addWorksheet('Intervalos');
+  ib.columns = ['Nome', 'Inicio', 'Duracao_min', 'Grupos', 'Escalonamento', 'Percentual'].map((h) => ({ header: h, width: 18 }));
+  for (const b of sc.calendar.breaks)
+    ib.addRow([b.name, b.startHour, b.durationMin, b.groups.length === PEOPLE_ROLES.length ? 'todos' : b.groups.map((g) => ROLE_NAMES_PT[g]).join(';'), b.stagger === 'half' ? 'metade' : b.stagger === 'percent' ? 'percentual' : 'todos', b.percentPerWave]);
+  styleHeader(ib);
 
   const r = wb.addWorksheet('Recursos');
   r.columns = ['Tipo', 'Quantidade', 'Vel_vazio', 'Vel_carregado', 'Disponibilidade', 'Custo_hora', 'Capacidade_paletes', 'Capacidade_kg', 'Eleva', 'Operador', 'Autonomia_min', 'Gatilho_carga', 'Carga_min', 'Setup_min', 'Carga_inicio_turno', 'Carga_fim_turno', 'Carga_horarios', 'Fonte'].map((h) => ({ header: h, width: h === 'Fonte' ? 60 : 16 }));
@@ -506,6 +612,10 @@ export async function exportResults(
   h.columns = ['Hora', 'Paletes_entrada', 'Paletes_saida', 'Pedidos', 'Util_empilhadeiras', 'Util_operarios', 'Fila_empilhadeiras'].map((x) => ({ header: x, width: 20 }));
   res.hourly.forEach((x) => h.addRow([x.hour, x.palletsIn, x.palletsOut, x.orders, x.utilForklift, x.utilWorker, x.queueForklift]));
   styleHeader(h);
+  const vs = wb.addWorksheet('Veiculos');
+  vs.columns = ['Tipo', 'Veiculos_por_dia', 'Manobra_media_min', 'Espera_doca_media_min'].map((x) => ({ header: x, width: 24 }));
+  res.vehicleStats.forEach((v) => vs.addRow([v.name, v.trucks, v.dockTurnMean, v.dockWaitMean]));
+  styleHeader(vs);
   if (cap) {
     const c = wb.addWorksheet('Dimensionamento');
     c.columns = ['Recurso', 'Atual', 'Necessário (média)', 'Necessário (pico)', 'Demanda/h (média)', 'Demanda/h (pico)', 'Capacidade/h', 'ρ média', 'ρ pico', 'Espera P95 pico (min)', 'Obs.'].map((x) => ({ header: x, width: x === 'Obs.' ? 80 : 20 }));

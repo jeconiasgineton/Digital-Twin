@@ -1,4 +1,5 @@
-import type { FleetSpec, Layout, ReplicationResult, RunKpis, Scenario, HourSeries } from '../model/types';
+import type { ArrivalSpec, FleetSpec, Layout, ReplicationResult, RunKpis, Scenario, HourSeries, VehicleType, PeopleRole } from '../model/types';
+import { PEOPLE_ROLES, breakMinutesPerDay, effectiveVehicles, offsetInShift, waveOf } from '../model/traffic';
 import { Rng, sampleDist } from '../math/rng';
 import { mean, percentile } from '../math/stats';
 import type { Pt } from '../math/spatial';
@@ -38,6 +39,11 @@ interface Counters {
   ordersArrived: number;
   palletsRequested: number;
   palletsDone: number;
+  scheduled: number; // veículos agendados/fixos gerados (base do % de atrasos)
+  delayed: number;
+  delaySec: number;
+  waitOverIn: number;
+  waitOverOut: number;
 }
 
 export class SimModel {
@@ -55,8 +61,10 @@ export class SimModel {
   readonly warm: number;
   readonly c: Counters = {
     palletsIn: 0, palletsOut: 0, orders: 0, lines: 0, cartons: 0, trucksIn: 0, trucksOut: 0, inReq: 0, outReq: 0,
-    stockouts: 0, overflow: 0, ordersArrived: 0, palletsRequested: 0, palletsDone: 0,
+    stockouts: 0, overflow: 0, ordersArrived: 0, palletsRequested: 0, palletsDone: 0, scheduled: 0, delayed: 0, delaySec: 0, waitOverIn: 0, waitOverOut: 0,
   };
+  /** estatísticas por tipo de veículo (índice = posição em effectiveVehicles) */
+  private vStats: { name: string; n: number; dockSec: number; waitSec: number }[] = [];
   readonly dockWaitIn: number[] = [];
   readonly dockWaitOut: number[] = [];
   readonly turnIn: number[] = [];
@@ -70,6 +78,10 @@ export class SimModel {
   private rngArr: Rng;
   private rngSvc: Rng;
   private rngRoute: Rng;
+  private rngVeh: Rng;
+  private rngDelay: Rng;
+  private vehIn: VehicleType[];
+  private vehOut: VehicleType[];
   private skuW: number[];
   private skuCls: (0 | 1 | 2)[];
   private truckSeq = 0;
@@ -80,6 +92,11 @@ export class SimModel {
     this.rngArr = root.fork('arrivals');
     this.rngSvc = root.fork('service');
     this.rngRoute = root.fork('routing');
+    this.rngVeh = root.fork('vehicles');
+    this.rngDelay = root.fork('delay');
+    this.vehIn = effectiveVehicles(sc, 'in');
+    this.vehOut = effectiveVehicles(sc, 'out');
+    this.vStats = this.vehIn.map((v) => ({ name: v.name, n: 0, dockSec: 0, waitSec: 0 }));
     this.world = world ?? buildWorld(layout, sc);
     this.horizon = sc.days * sc.shiftHours * 3600;
     this.warm = Math.min(sc.warmupHours * 3600, this.horizon * 0.5);
@@ -155,8 +172,9 @@ export class SimModel {
     startFail(this.workers, sc.workers.availability);
     startFail(this.checkers, sc.checkers.availability);
 
-    sim.spawn(this.arrivals(sc.inboundTrucksPerHour, () => this.inboundTruck()));
-    sim.spawn(this.arrivals(sc.outboundTrucksPerHour, () => this.outboundTruck()));
+    sim.spawn(this.vehicleArrivals(sc.arrivalsIn, sc.inboundTrucksPerHour, () => this.inboundTruck()));
+    sim.spawn(this.vehicleArrivals(sc.arrivalsOut, sc.outboundTrucksPerHour, () => this.outboundTruck()));
+    this.startBreaks();
     sim.spawn(this.arrivals(sc.ordersPerHour, () => this.order()));
     sim.spawn(this.sampler());
   }
@@ -291,6 +309,76 @@ export class SimModel {
     };
   }
 
+  /** gera chegadas de veículos conforme o modo: aleatório por hora, intervalo fixo ou agenda (com atrasos) */
+  private vehicleArrivals(spec: ArrivalSpec, rates: number[], make: () => Process): () => Process {
+    if (spec.mode === 'poisson') return this.arrivals(rates, make);
+    const self = this;
+    const sc = this.sc;
+    const horizon = this.horizon;
+    // instantes nominais (s) das chegadas
+    const times: number[] = [];
+    if (spec.mode === 'fixed') {
+      const step = (Math.max(0.1, spec.intervalMin) * 60) / Math.max(0.01, sc.demandFactor);
+      for (let t = 0; t < horizon; t += step) times.push(t);
+    } else {
+      const hours = [...spec.scheduleHours].sort((a, b) => a - b);
+      for (let d = 0; d < sc.days; d++)
+        for (const h of hours) {
+          const off = offsetInShift(sc, h);
+          if (off !== null) times.push(d * sc.shiftHours * 3600 + off);
+        }
+    }
+    const delayed = function* (): Process {
+      self.c.scheduled++;
+      if (spec.delayProb > 0 && self.rngDelay.next() < spec.delayProb) {
+        const d = Math.max(0, sampleDist(self.rngDelay, spec.delayMin)) * 60;
+        if (self.sim.now >= self.warm) {
+          self.c.delayed++;
+          self.c.delaySec += d;
+        }
+        yield d;
+      }
+      yield* make();
+    };
+    return function* () {
+      for (const t of times) {
+        yield Math.max(0, t - self.sim.now);
+        self.sim.spawn(delayed());
+      }
+    };
+  }
+
+  private pickVehicle(list: VehicleType[]): { idx: number; v: VehicleType } {
+    if (list.length === 1) return { idx: 0, v: list[0] };
+    const idx = this.rngVeh.pick(list.map((v) => Math.max(0, v.share)));
+    return { idx, v: list[idx] };
+  }
+
+  /** intervalos das pessoas: cada recurso do grupo para na sua onda, a cada dia, via parada programada */
+  private startBreaks() {
+    const sc = this.sc;
+    const sim = this.sim;
+    const pools: Record<PeopleRole, Pool<Agent>> = { forklift: this.forklifts, worker: this.workers, checker: this.checkers };
+    for (const b of sc.calendar.breaks) {
+      const off = offsetInShift(sc, b.startHour);
+      if (off === null || b.durationMin <= 0) continue;
+      for (const role of PEOPLE_ROLES) {
+        if (!b.groups.includes(role)) continue;
+        const pool = pools[role];
+        pool.items.forEach((it, i) => {
+          const wave = waveOf(b, i, pool.items.length);
+          sim.spawn(function* () {
+            for (let d = 0; d < sc.days; d++) {
+              const t = d * sc.shiftHours * 3600 + off + wave * b.durationMin * 60;
+              yield Math.max(0, t - sim.now);
+              yield pool.fail(it, b.durationMin * 60);
+            }
+          });
+        });
+      }
+    }
+  }
+
   private palletsPerTruck(spec: Scenario['palletsPerTruckIn']): number {
     const n = Math.round(this.rngSvc.normal(spec.mean, spec.sd));
     return Math.min(Math.max(1, n), Math.max(1, spec.max));
@@ -298,14 +386,23 @@ export class SimModel {
 
   private *inboundTruck(): Process {
     const id = ++this.truckSeq;
+    const { idx: vi, v } = this.pickVehicle(this.vehIn);
     const tArr = this.sim.now;
     this.tracer?.truckQueued(id, 'in', tArr);
     const dock: DockItem = yield this.dockIn.request();
     const tDock = this.sim.now;
     this.tracer?.truckDocked(id, 'in', dock.idx, tDock);
-    if (tArr >= this.warm) this.dockWaitIn.push((tDock - tArr) / 60);
-    yield sampleDist(this.rngSvc, this.sc.ops.dockTurnover);
-    const n = this.palletsPerTruck(this.sc.palletsPerTruckIn);
+    const turn = sampleDist(this.rngSvc, v.dockTurnover);
+    if (tArr >= this.warm) {
+      this.dockWaitIn.push((tDock - tArr) / 60);
+      if ((tDock - tArr) / 60 > this.sc.dockWaitThresholdMin) this.c.waitOverIn++;
+      const st = this.vStats[vi];
+      st.n++;
+      st.dockSec += turn;
+      st.waitSec += tDock - tArr;
+    }
+    yield turn;
+    const n = this.palletsPerTruck(v.pallets);
     const unloaded = new Countdown(this.sim, n);
     for (let i = 0; i < n; i++) this.sim.spawn(this.inboundPallet(dock, unloaded, tDock));
     yield unloaded.signal;
@@ -365,14 +462,18 @@ export class SimModel {
 
   private *outboundTruck(): Process {
     const id = ++this.truckSeq;
+    const { v } = this.pickVehicle(this.vehOut);
     const tArr = this.sim.now;
     this.tracer?.truckQueued(id, 'out', tArr);
     const dock: DockItem = yield this.dockOut.request();
     const tDock = this.sim.now;
     this.tracer?.truckDocked(id, 'out', dock.idx, tDock);
-    if (tArr >= this.warm) this.dockWaitOut.push((tDock - tArr) / 60);
-    yield sampleDist(this.rngSvc, this.sc.ops.dockTurnover);
-    const n = this.palletsPerTruck(this.sc.palletsPerTruckOut);
+    if (tArr >= this.warm) {
+      this.dockWaitOut.push((tDock - tArr) / 60);
+      if ((tDock - tArr) / 60 > this.sc.dockWaitThresholdMin) this.c.waitOverOut++;
+    }
+    yield sampleDist(this.rngSvc, v.dockTurnover);
+    const n = this.palletsPerTruck(v.pallets);
     const loaded = new Countdown(this.sim, n);
     for (let i = 0; i < n; i++) this.sim.spawn(this.outboundPallet(dock, loaded, tDock));
     yield loaded.signal;
@@ -575,6 +676,9 @@ export class SimModel {
     const totalCost = fleetCost * hours;
     const moved = c.palletsIn + c.palletsOut;
     const kms = (p: Pool<Agent>) => (p.items.length ? mean(p.items.map((a) => a.km)) : 0);
+    const breakFk = breakMinutesPerDay(sc, 'forklift');
+    const prodFk = Math.max(0.05, 1 - breakFk / 60 / sc.shiftHours); // fração do turno em horas úteis
+    const prodWk = Math.max(0.05, 1 - breakMinutesPerDay(sc, 'worker') / 60 / sc.shiftHours);
     const stockNow = this.world.racks.reduce((s, r) => s + r.stock, 0);
     const occ = this.occSeries.filter((o) => o.t >= this.warm).map((o) => o.occ);
     const kpis: RunKpis = {
@@ -608,14 +712,21 @@ export class SimModel {
       occupancyMax: occ.length ? Math.max(...occ) : 0,
       stockoutRate: c.outReq ? c.stockouts / (c.outReq * 1) : 0,
       overflowRate: c.inReq ? c.overflow / c.inReq : 0,
-      palletsPerForkliftHour: sc.forklifts.count ? moved / (sc.forklifts.count * hours) : 0,
-      linesPerWorkerHour: sc.workers.count ? c.lines / (sc.workers.count * hours) : 0,
+      palletsPerForkliftHour: sc.forklifts.count ? moved / (sc.forklifts.count * hours * prodFk) : 0,
+      linesPerWorkerHour: sc.workers.count ? c.lines / (sc.workers.count * hours * prodWk) : 0,
       kmPerForklift: kms(this.forklifts) / days,
       kmPerWorker: kms(this.workers) / days,
       costPerPallet: moved ? totalCost / moved : 0,
       totalCost,
       backlogOrders: 0,
       backlogPallets: Math.max(0, c.palletsRequested - c.palletsDone),
+      trucksDelayedPct: c.scheduled ? c.delayed / c.scheduled : 0,
+      truckDelayMean: c.delayed ? c.delaySec / c.delayed / 60 : 0,
+      dockWaitOverPctIn: this.dockWaitIn.length ? c.waitOverIn / this.dockWaitIn.length : 0,
+      dockWaitOverPctOut: this.dockWaitOut.length ? c.waitOverOut / this.dockWaitOut.length : 0,
+      productiveHoursPerDay: sc.shiftHours * prodFk,
+      breakHoursPerDay: breakFk / 60,
+      nonWorkingHoursPerDay: Math.max(0, 24 - sc.shiftHours),
     };
     kpis.backlogOrders = this.workers.queueLength; // pedidos ainda aguardando operário ao final
     return {
@@ -623,6 +734,7 @@ export class SimModel {
       hourly: this.hourly,
       samples: { orderCycle: this.orderCycle, forkliftWait: this.forklifts.waits.map((w) => w / 60), putawayLead: this.putawayLead, truckTurn: [...this.turnIn, ...this.turnOut] },
       occupancySeries: this.occSeries,
+      vehicleStats: this.vStats.map((s) => ({ name: s.name, trucks: s.n / days, dockTurnMean: s.n ? s.dockSec / s.n / 60 : 0, dockWaitMean: s.n ? s.waitSec / s.n / 60 : 0 })),
     };
   }
 }

@@ -1,5 +1,6 @@
 import type { Dist, Scenario } from './types';
 import { NIOSH_LOAD_KG, defaultEquipment } from './equipment';
+import { defaultArrival, defaultCalendar } from './traffic';
 
 const tri = (min: number, mode: number, max: number): Dist => ({ kind: 'triangular', a: min, b: mode, c: max });
 
@@ -64,5 +65,10 @@ export function defaultScenario(): Scenario {
       { sku: 'SKU-C2', description: 'Baixíssimo giro', cls: 'C', share: 0.05, cartonsPerPallet: 40 },
     ],
     demandFactor: 1,
+    vehicleTypes: [],
+    arrivalsIn: defaultArrival(),
+    arrivalsOut: defaultArrival(),
+    dockWaitThresholdMin: 10,
+    calendar: defaultCalendar(),
   };
 }

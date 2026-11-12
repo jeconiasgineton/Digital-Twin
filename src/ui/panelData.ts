@@ -1,13 +1,19 @@
-import type { Dist, DistKind, EquipmentSpec, FleetSpec, Scenario } from '../model/types';
+import type { ArrivalSpec, BreakSpec, Dist, DistKind, EquipmentSpec, FleetSpec, PeopleRole, Scenario, VehicleType } from '../model/types';
+import { PEOPLE_ROLES, ROLE_NAMES, breakWaves, defaultBreak, presetVehicle } from '../model/traffic';
 import { catalog, defaultEquipment, NIOSH_LOAD_KG } from '../model/equipment';
 import { hourlyProfile } from '../model/defaults';
 import { exportTemplate, importWorkbook } from '../io/excel';
 import type { AppCtx } from './ctx';
-import { download, fmt, h, numField, pickFile, selField, toast } from './dom';
+import { download, fmt, h, numField, pickFile, selField, textField, toast } from './dom';
 import { seriesChart } from './charts';
 
+/** seções abertas pelo usuário: sobrevivem aos redesenhos do painel (ex.: ao adicionar um tipo de veículo) */
+const sectionOpen = new Map<string, boolean>();
+
 function section(title: string, body: (Element | null)[], open = true) {
-  return h('details', { open }, h('summary', null, title), h('div', { class: 'body' }, body));
+  const d = h('details', { open: sectionOpen.get(title) ?? open }, h('summary', null, title), h('div', { class: 'body' }, body));
+  d.addEventListener('toggle', () => sectionOpen.set(title, d.open));
+  return d;
 }
 
 const sum = (a: number[]) => a.reduce((s, v) => s + v, 0);
@@ -134,6 +140,87 @@ function equipmentCard(ctx: AppCtx, e: EquipmentSpec): HTMLElement {
   );
 }
 
+const fmtHour = (h: number) => `${String(Math.floor(h)).padStart(2, '0')}:${String(Math.round((h % 1) * 60)).padStart(2, '0')}`;
+const parseHourText = (s: string): number | null => {
+  const m = s.trim().match(/^(\d{1,2})\s*[:h]\s*(\d{0,2})$/);
+  const v = m ? +m[1] + (m[2] ? +m[2] / 60 : 0) : parseFloat(s.replace(',', '.'));
+  return Number.isFinite(v) && v >= 0 && v < 24 ? v : null;
+};
+
+/** chegadas de um sentido (recebimento/expedição): modo, intervalo/agenda e atrasos */
+function arrivalBox(ctx: AppCtx, title: string, a: ArrivalSpec): HTMLElement {
+  const ch = () => ctx.scenarioChanged();
+  const body: HTMLElement[] = [
+    selField('Modo de chegada', () => a.mode, (v) => ((a.mode = v), ch(), ctx.rerender()), [
+      ['poisson', 'Aleatório (taxa por hora – aba Demanda)'], ['fixed', 'Intervalo fixo (a cada X min)'], ['scheduled', 'Agendado (horários)'],
+    ]),
+  ];
+  if (a.mode === 'fixed') body.push(numField('Um veículo a cada', () => a.intervalMin, (v) => ((a.intervalMin = Math.max(0.1, v)), ch()), { step: 1, min: 0.1, unit: 'min' }));
+  if (a.mode === 'scheduled')
+    body.push(h('label', { class: 'f' }, h('span', null, 'Horários (hh:mm separados por ;)'),
+      h('input', { type: 'text', value: a.scheduleHours.map(fmtHour).join('; '), placeholder: '06:00; 06:30; 07:15',
+        onchange: (ev: Event) => { a.scheduleHours = (ev.target as HTMLInputElement).value.split(/[;,]\s*(?=\d)/).map(parseHourText).filter((x): x is number => x !== null).sort((x, y) => x - y); (ev.target as HTMLInputElement).value = a.scheduleHours.map(fmtHour).join('; '); ch(); } })));
+  if (a.mode !== 'poisson')
+    body.push(
+      numField('Probabilidade de atraso', () => a.delayProb * 100, (v) => ((a.delayProb = Math.min(1, Math.max(0, v / 100))), ch()), { step: 5, min: 0, max: 100, unit: '%' }),
+      numField('Atraso médio (se atrasado)', () => a.delayMin.a, (v) => ((a.delayMin = { kind: 'lognormal', a: Math.max(0.1, v), b: a.delayMin.b ?? 0 }), ch()), { step: 5, min: 0.1, unit: 'min' }),
+      numField('Desvio do atraso', () => a.delayMin.b ?? 0, (v) => ((a.delayMin = { kind: 'lognormal', a: a.delayMin.a, b: Math.max(0, v) }), ch()), { step: 5, min: 0, unit: 'min' }),
+    );
+  else body.push(h('p', { class: 'note' }, 'No modo aleatório as chegadas já são irregulares; atrasos valem para os modos intervalo fixo e agendado.'));
+  return h('details', { open: true }, h('summary', null, title), h('div', { class: 'body', style: { display: 'grid', gap: '7px' } }, body));
+}
+
+function vehicleCard(ctx: AppCtx, v: VehicleType): HTMLElement {
+  const sc = ctx.scenario;
+  const ch = () => ctx.scenarioChanged();
+  return h('details', { open: true },
+    h('summary', null, `${v.name} · ${(v.share / Math.max(1e-9, sc.vehicleTypes.reduce((s, x) => s + x.share, 0)) * 100).toFixed(0)}% da frota`),
+    h('div', { class: 'body', style: { display: 'grid', gap: '7px' } },
+      textField('Nome', () => v.name, (t) => ((v.name = t || v.name), ch(), ctx.rerender())),
+      numField('Participação (peso)', () => v.share, (x) => ((v.share = Math.max(0, x)), ch(), ctx.rerender()), { step: 0.05, min: 0, title: 'Normalizada pela soma de todos os tipos' }),
+      h('table', null,
+        h('thead', null, h('tr', null, ['Manobra/docagem (s)', 'Distrib.', 'p1', 'p2', 'p3'].map((t) => h('th', null, t)))),
+        h('tbody', null, distRow(ctx, '', () => v.dockTurnover, (d) => ((v.dockTurnover = d), ch())))),
+      h('p', { class: 'note' }, `≈ ${(distMeanOf(v.dockTurnover) / 60).toFixed(1)} min por manobra.`),
+      numField('Paletes por veículo (média)', () => v.pallets.mean, (x) => ((v.pallets.mean = Math.max(1, x)), ch()), { step: 1, min: 1 }),
+      numField('desvio', () => v.pallets.sd, (x) => ((v.pallets.sd = Math.max(0, x)), ch()), { step: 0.5, min: 0 }),
+      numField('máximo (capacidade)', () => v.pallets.max, (x) => ((v.pallets.max = Math.max(1, x)), ch()), { step: 1, min: 1 }),
+      numField('Comprimento do baú', () => v.trailerLengthM, (x) => ((v.trailerLengthM = Math.max(1, x)), ch()), { step: 0.5, min: 1, unit: 'm', title: 'Define a distância de movimentação dentro do baú no recebimento' }),
+      h('button', { class: 'b danger sm', onclick: () => { sc.vehicleTypes = sc.vehicleTypes.filter((x) => x !== v); ch(); ctx.rerender(); } }, 'Remover tipo'),
+    ),
+  );
+}
+
+function breakCard(ctx: AppCtx, b: BreakSpec): HTMLElement {
+  const sc = ctx.scenario;
+  const ch = () => ctx.scenarioChanged();
+  const roleChk = (r: PeopleRole) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: b.groups.includes(r), onchange: (ev: Event) => {
+    b.groups = (ev.target as HTMLInputElement).checked ? [...new Set([...b.groups, r])] : b.groups.filter((x) => x !== r);
+    ch(); ctx.rerender();
+  } }), ROLE_NAMES[r]);
+  const all = b.groups.length === PEOPLE_ROLES.length;
+  const waves = breakWaves(b);
+  return h('details', { open: true },
+    h('summary', null, `${b.name} · ${fmtHour(b.startHour)} · ${b.durationMin} min`),
+    h('div', { class: 'body', style: { display: 'grid', gap: '7px' } },
+      textField('Nome', () => b.name, (t) => ((b.name = t || b.name), ch(), ctx.rerender())),
+      h('label', { class: 'f' }, h('span', null, 'Início (hh:mm)'), h('input', { type: 'text', value: fmtHour(b.startHour), onchange: (ev: Event) => { const v = parseHourText((ev.target as HTMLInputElement).value); if (v !== null) { b.startHour = v; ch(); ctx.rerender(); } else (ev.target as HTMLInputElement).value = fmtHour(b.startHour); } })),
+      numField('Duração', () => b.durationMin, (x) => ((b.durationMin = Math.max(1, x)), ch(), ctx.rerender()), { step: 5, min: 1, unit: 'min' }),
+      h('b', null, 'Quem para'),
+      h('div', { class: 'row' },
+        h('button', { class: `b sm${all ? ' pri' : ''}`, onclick: () => { b.groups = [...PEOPLE_ROLES]; ch(); ctx.rerender(); } }, 'Todas as pessoas'),
+        h('span', { class: 'note' }, all ? '' : 'ou grupos específicos:')),
+      h('div', { class: 'row' }, PEOPLE_ROLES.map(roleChk)),
+      selField('Como a equipe sai', () => b.stagger, (v) => ((b.stagger = v), ch(), ctx.rerender()), [['all', 'Todos ao mesmo tempo'], ['half', 'Metade da equipe por vez'], ['percent', 'Um percentual por vez']]),
+      b.stagger === 'percent' ? numField('Percentual por vez', () => b.percentPerWave, (x) => ((b.percentPerWave = Math.min(100, Math.max(1, x))), ch(), ctx.rerender()), { step: 5, min: 1, max: 100, unit: '%' }) : null,
+      h('p', { class: 'note' }, waves === 1 ? 'Toda a equipe sai junta.' : `${waves} ondas sucessivas de ${b.durationMin} min cada (o intervalo todo dura ${waves * b.durationMin} min).`),
+      h('button', { class: 'b danger sm', onclick: () => { sc.calendar.breaks = sc.calendar.breaks.filter((x) => x !== b); ch(); ctx.rerender(); } }, 'Remover intervalo'),
+    ),
+  );
+}
+
+const distMeanOf = (d: Dist) => (d.kind === 'triangular' ? (d.a + (d.b ?? d.a) + (d.c ?? d.a)) / 3 : d.kind === 'uniform' ? (d.a + (d.b ?? d.a)) / 2 : d.kind === 'lognormal' || d.kind === 'normal' || d.kind === 'exponential' || d.kind === 'constant' ? d.a : d.a);
+
 export function renderDataPanel(ctx: AppCtx): HTMLElement {
   const sc = ctx.scenario;
   const ch = () => ctx.scenarioChanged();
@@ -201,6 +288,26 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
       numField('Carga manual máx. por operador', () => sc.workers.capacityKg ?? NIOSH_LOAD_KG, (v) => ((sc.workers.capacityKg = sc.checkers.capacityKg = Math.max(1, v)), ch()), { step: 1, min: 1, unit: 'kg', title: 'Padrão: 23 kg, constante de carga da equação de levantamento do NIOSH (condições ideais)' }),
       h('p', { class: 'note' }, 'Disponibilidade modela quebras/paradas (MTTR = 30 min, tempos entre falhas exponenciais). A carga manual máxima (padrão NIOSH, 23 kg) limita o que uma pessoa levanta sem equipamento.'),
     ]),
+    section('Veículos e chegadas', [
+      arrivalBox(ctx, 'Chegadas – recebimento', sc.arrivalsIn),
+      arrivalBox(ctx, 'Chegadas – expedição', sc.arrivalsOut),
+      numField('Limite de espera na doca (gargalo)', () => sc.dockWaitThresholdMin, (v) => ((sc.dockWaitThresholdMin = Math.max(0, v)), ch()), { step: 1, min: 0, unit: 'min', title: 'Caminhões que esperam mais que isso contam no indicador "% acima do limite"' }),
+      h('b', null, 'Tipos de veículo'),
+      sc.vehicleTypes.length ? null : h('p', { class: 'note' }, 'Sem tipos cadastrados: todos os caminhões são iguais (paletes por caminhão e manobra gerais). Adicione tipos para diferenciar o tempo de docagem e a carga de cada veículo.'),
+      ...sc.vehicleTypes.map((v) => vehicleCard(ctx, v)),
+      h('div', { class: 'row' },
+        h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('carreta')); ch(); ctx.rerender(); } }, '+ Carreta'),
+        h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('truck')); ch(); ctx.rerender(); } }, '+ Truck'),
+        h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('vuc')); ch(); ctx.rerender(); } }, '+ VUC')),
+    ], false),
+    section('Jornada e intervalos', [
+      h('p', { class: 'note' }, `Jornada: ${sc.shiftHours} h a partir das ${fmtHour(sc.startHour)} (ajuste em "Horizonte e metas"). As ${fmt(Math.max(0, 24 - sc.shiftHours), 0)} h restantes do dia são horas não úteis e não são simuladas. A produtividade usa as horas úteis (jornada − intervalos).`),
+      ...sc.calendar.breaks.map((b) => breakCard(ctx, b)),
+      h('div', { class: 'row' },
+        h('button', { class: 'b sm', onclick: () => { sc.calendar.breaks.push(defaultBreak('almoco')); ch(); ctx.rerender(); } }, '+ Almoço (metade por vez)'),
+        h('button', { class: 'b sm', onclick: () => { sc.calendar.breaks.push(defaultBreak('cafe')); ch(); ctx.rerender(); } }, '+ Café (todos juntos)')),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.calendar.amrWorksDuringBreaks, onchange: (ev: Event) => { sc.calendar.amrWorksDuringBreaks = (ev.target as HTMLInputElement).checked; ch(); } }), 'AMR continuam trabalhando durante os intervalos das pessoas'),
+    ], false),
     section('Demanda por hora', [
       seriesChart([
         { name: 'Cam. entrada', values: idx(sc.inboundTrucksPerHour), type: 'bar' },

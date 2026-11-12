@@ -50,6 +50,12 @@ export function runExperiment(sc: Scenario, layout: Layout, onProgress?: (done: 
       putawayLead: cat((s) => s.putawayLead), truckTurn: cat((s) => s.truckTurn),
     },
     occupancySeries,
+    vehicleStats: (reps[0]?.vehicleStats ?? []).map((v, i) => ({
+      name: v.name,
+      trucks: reps.reduce((s, r) => s + (r.vehicleStats[i]?.trucks ?? 0), 0) / reps.length,
+      dockTurnMean: reps.reduce((s, r) => s + (r.vehicleStats[i]?.dockTurnMean ?? 0), 0) / reps.length,
+      dockWaitMean: reps.reduce((s, r) => s + (r.vehicleStats[i]?.dockWaitMean ?? 0), 0) / reps.length,
+    })),
     elapsedMs: Date.now() - t0,
   };
 }

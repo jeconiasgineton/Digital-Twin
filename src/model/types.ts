@@ -130,6 +130,57 @@ export interface SkuSpec {
   cartonsPerPallet: number;
 }
 
+/* ---------- veículos, chegadas e calendário ---------- */
+
+/** tipo de veículo: define tempo de docagem (manobra) e carga; ex.: carreta 3 min, truck 1 min */
+export interface VehicleType {
+  id: string;
+  name: string;
+  /** participação na frota que chega (normalizada; vale para recebimento e expedição) */
+  share: number;
+  /** tempo de manobra/docagem (s) */
+  dockTurnover: Dist;
+  /** paletes por veículo */
+  pallets: { mean: number; sd: number; max: number };
+  /** comprimento do baú (m): distância de movimentação dentro do baú (usada no recebimento) */
+  trailerLengthM: number;
+}
+
+export type ArrivalMode = 'poisson' | 'fixed' | 'scheduled';
+
+export interface ArrivalSpec {
+  /** poisson: taxa por hora do dia (aba Demanda) · fixed: um veículo a cada X min · scheduled: horários da agenda */
+  mode: ArrivalMode;
+  /** fixed: intervalo entre chegadas (min) */
+  intervalMin: number;
+  /** scheduled: horários agendados (hora do dia, ex.: 6.5 = 06:30), repetidos todos os dias */
+  scheduleHours: number[];
+  /** fixed/scheduled: probabilidade de o veículo chegar atrasado (0–1) */
+  delayProb: number;
+  /** atraso (minutos) quando atrasado */
+  delayMin: Dist;
+}
+
+export type PeopleRole = 'forklift' | 'worker' | 'checker';
+
+export interface BreakSpec {
+  name: string;
+  /** hora do dia em que o intervalo começa (0–24) */
+  startHour: number;
+  durationMin: number;
+  /** quem para: grupos específicos (todos marcados = todas as pessoas) */
+  groups: PeopleRole[];
+  /** como a equipe sai: todos juntos, metade por vez ou um percentual por vez (em ondas sucessivas) */
+  stagger: 'all' | 'half' | 'percent';
+  percentPerWave: number;
+}
+
+export interface WorkCalendar {
+  breaks: BreakSpec[];
+  /** AMR continuam trabalhando durante os intervalos das pessoas? */
+  amrWorksDuringBreaks: boolean;
+}
+
 export interface Scenario {
   name: string;
   // horizonte
@@ -179,6 +230,13 @@ export interface Scenario {
   skus: SkuSpec[];
   /** multiplicador global de demanda (para sensibilidade) */
   demandFactor: number;
+  /** tipos de veículo; vazio = um tipo único (paletes por caminhão e manobra gerais) */
+  vehicleTypes: VehicleType[];
+  arrivalsIn: ArrivalSpec;
+  arrivalsOut: ArrivalSpec;
+  /** espera na doca acima da qual o caminhão conta como "gargalo" (min) */
+  dockWaitThresholdMin: number;
+  calendar: WorkCalendar;
 }
 
 /* ---------- resultados ---------- */
@@ -239,6 +297,22 @@ export interface RunKpis {
   totalCost: number;
   backlogOrders: number;
   backlogPallets: number;
+  // chegadas e docagem
+  trucksDelayedPct: number; // % de veículos agendados que chegaram atrasados
+  truckDelayMean: number; // atraso médio dos atrasados (min)
+  dockWaitOverPctIn: number; // % de caminhões de recebimento que esperaram mais que o limite
+  dockWaitOverPctOut: number;
+  // calendário
+  productiveHoursPerDay: number; // horas úteis por dia por empilhadeira (turno − intervalos)
+  breakHoursPerDay: number; // intervalos por dia por empilhadeira
+  nonWorkingHoursPerDay: number; // horas não úteis do dia (24 − turno)
+}
+
+export interface VehicleStat {
+  name: string;
+  trucks: number; // por dia
+  dockTurnMean: number; // manobra média (min)
+  dockWaitMean: number; // espera média por doca (min)
 }
 
 export interface HourSeries {
@@ -257,6 +331,7 @@ export interface ReplicationResult {
   /** amostras individuais (min) para histogramas */
   samples: { orderCycle: number[]; forkliftWait: number[]; putawayLead: number[]; truckTurn: number[] };
   occupancySeries: { t: number; occ: number }[];
+  vehicleStats: VehicleStat[];
 }
 
 export type Aggregated = { [K in keyof RunKpis]: SummaryStat };
@@ -268,5 +343,6 @@ export interface ExperimentResult {
   hourly: HourSeries[];
   samples: ReplicationResult['samples'];
   occupancySeries: { t: number; occ: number }[];
+  vehicleStats: VehicleStat[];
   elapsedMs: number;
 }

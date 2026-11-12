@@ -1,3 +1,4 @@
+import { arrivalProfile, vehicleMeans } from '../model/traffic';
 import type { Layout, Scenario } from '../model/types';
 import { distMean, distScv } from '../math/rng';
 import { ggcMetrics, little, safetyStock, sizeServers } from '../math/queueing';
@@ -57,11 +58,13 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
     for (let k = 0; k < sc.shiftHours; k++) rates.push((h[(sc.startHour + k) % 24] ?? 0) * sc.demandFactor);
     return { avg: rates.reduce((s, v) => s + v, 0) / Math.max(1, rates.length), peak: Math.max(0, ...rates), daily: rates.reduce((s, v) => s + v, 0) };
   };
-  const tin = op(sc.inboundTrucksPerHour);
-  const tout = op(sc.outboundTrucksPerHour);
+  const tin = op(arrivalProfile(sc, 'in'));
+  const tout = op(arrivalProfile(sc, 'out'));
   const ord = op(sc.ordersPerHour);
-  const bIn = sc.palletsPerTruckIn;
-  const bOut = sc.palletsPerTruckOut;
+  const vIn = vehicleMeans(sc, 'in');
+  const vOut = vehicleMeans(sc, 'out');
+  const bIn = { ...sc.palletsPerTruckIn, mean: vIn.pallets };
+  const bOut = { ...sc.palletsPerTruckOut, mean: vOut.pallets };
   const pIn = { avg: tin.avg * bIn.mean, peak: tin.peak * bIn.mean, daily: tin.daily * bIn.mean };
   const pOut = { avg: tout.avg * bOut.mean, peak: tout.peak * bOut.mean, daily: tout.daily * bOut.mean };
 
@@ -136,9 +139,9 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
 
   // docas
   const cEffIn = Math.max(1, Math.min(bIn.mean, fk.count * fk.availability * 0.5));
-  const dockSIn = distMean(ops.dockTurnover) + (bIn.mean * (tvE(dIn) + distMean(ops.unloadPallet))) / cEffIn;
+  const dockSIn = vIn.dockSec + (bIn.mean * (tvE(dIn) + distMean(ops.unloadPallet))) / cEffIn;
   const cEffOut = Math.max(1, Math.min(bOut.mean, fk.count * fk.availability * 0.5));
-  const dockSOut = distMean(ops.dockTurnover) + (bOut.mean * sOut) / cEffOut;
+  const dockSOut = vOut.dockSec + (bOut.mean * sOut) / cEffOut;
   rows.push(mkRow('dockIn', 'Docas de recebimento', 'docas', w.docksIn.length, 1, tin.avg / 3600, tin.peak / 3600, dockSIn, dockSIn, 0.3, 1, `Ocupação por caminhão ≈ ${(dockSIn / 60).toFixed(0)} min (manobra + descarga com ${cEffIn.toFixed(1)} empilhadeiras efetivas).`));
   rows.push(mkRow('dockOut', 'Docas de expedição', 'docas', w.docksOut.length, 1, tout.avg / 3600, tout.peak / 3600, dockSOut, dockSOut, 0.3, 1, `Ocupação por caminhão ≈ ${(dockSOut / 60).toFixed(0)} min.`));
 

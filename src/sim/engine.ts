@@ -133,6 +133,10 @@ export class Pool<T extends PoolItem> {
   maxQueue = 0;
   /** itens com quebra pendente (ocupados): entram em reparo ao serem liberados */
   private pendingFail = new Map<T, { repair: number; sig: Signal }>();
+  /** itens em reparo/intervalo agora */
+  private repairing = new Set<T>();
+  /** paradas que chegaram com o item já parado ou com parada pendente: executadas em sequência */
+  private deferred = new Map<T, { repair: number; sig: Signal }[]>();
   onWait?: (w: number) => void;
 
   constructor(private sim: Sim, items: T[]) {
@@ -227,6 +231,12 @@ export class Pool<T extends PoolItem> {
    */
   fail(item: T, repair: number): Signal {
     const sig = new Signal(this.sim);
+    if (this.repairing.has(item) || this.pendingFail.has(item)) {
+      const q = this.deferred.get(item) ?? [];
+      q.push({ repair, sig });
+      this.deferred.set(item, q);
+      return sig;
+    }
     const idx = this.idle.indexOf(item);
     if (idx >= 0) {
       this.idle.splice(idx, 1);
@@ -239,10 +249,14 @@ export class Pool<T extends PoolItem> {
 
   private _repair(item: T, repair: number, sig: Signal) {
     const start = this.sim.now;
+    this.repairing.add(item);
     this.sim.schedule(repair, () => {
       const from = Math.max(start, this.statsFrom);
       if (this.sim.now > from) item.downTime += this.sim.now - from;
-      this._offer(item);
+      this.repairing.delete(item);
+      const next = this.deferred.get(item)?.shift();
+      if (next) this._repair(item, next.repair, next.sig);
+      else this._offer(item);
       sig.fire();
     });
   }

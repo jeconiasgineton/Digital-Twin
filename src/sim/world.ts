@@ -1,4 +1,5 @@
 import type { Layout, LayoutElement, Scenario } from '../model/types';
+import { arrivalProfile } from '../model/traffic';
 import { validateEquipment } from '../model/equipment';
 import { aisleCodeOf, aisleOf, areaCapacity } from '../model/areas';
 import {
@@ -206,8 +207,8 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
   const out: ValidationIssue[] = [];
   const c = (t: string) => layout.elements.filter((e) => e.type === t).length;
   if (c('rack') === 0) out.push({ level: 'erro', msg: 'O layout não possui estruturas porta-paletes (racks).' });
-  const needIn = sc.inboundTrucksPerHour.some((v) => v > 0);
-  const needOut = sc.outboundTrucksPerHour.some((v) => v > 0);
+  const needIn = arrivalProfile(sc, 'in').some((v) => v > 0);
+  const needOut = arrivalProfile(sc, 'out').some((v) => v > 0);
   if (needIn && c('dockIn') === 0) out.push({ level: 'erro', msg: 'Há demanda de recebimento, mas não há docas de entrada.' });
   if (needOut && c('dockOut') === 0) out.push({ level: 'erro', msg: 'Há demanda de expedição, mas não há docas de saída.' });
   if (sc.ordersPerHour.some((v) => v > 0) && c('conveyor') === 0)
