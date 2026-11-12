@@ -12,7 +12,12 @@ export type ElementType =
   | 'wall' // parede / limite
   | 'zone' // área (staging, picking, etc.)
   | 'station' // estação (embalagem/conferência)
-  | 'parking'; // área de estacionamento de empilhadeiras/operários
+  | 'parking' // área de estacionamento de empilhadeiras/operários
+  | 'aisle' // rua (corredor entre racks)
+  | 'transit' // endereço transitório: local da rua onde o palete é deixado entre as etapas da armazenagem faseada
+  | 'stage' // área de stage do recebimento (paletes no chão aguardando conferência)
+  | 'triage' // área de triagem (destino das caixas/paletes avariados)
+  | 'charger'; // estação de carga de AMR
 
 export interface LayoutElement {
   id: string;
@@ -36,6 +41,12 @@ export interface LayoutElement {
   pickFace?: boolean;
   /** esteiras: velocidade (m/s) */
   speed?: number;
+  /** stage, endereço transitório, triagem: capacidade em paletes; estação de carga: nº de vagas. Vazio = calculada pela área */
+  capacity?: number;
+  /** rua: código/letra da rua (ex.: "A"); endereço transitório: rua a que pertence (vazio = rua que contém o elemento) */
+  aisle?: string;
+  /** triagem: ordem de uso (1 = primeira; ao lotar, o palete segue para a próxima) */
+  priority?: number;
 }
 
 export interface Layout {

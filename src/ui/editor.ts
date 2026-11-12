@@ -2,13 +2,15 @@ import * as THREE from 'three';
 import type { Layout, LayoutElement, ElementType } from '../model/types';
 import type { Pt } from '../math/spatial';
 import { linearEnds, toLocal } from '../math/spatial';
+import { aisleOf, nextAisleCode } from '../model/areas';
 import { newId } from '../model/layoutGen';
 import type { SceneView } from '../view/scene';
 
-export type Tool = 'select' | 'rack' | 'wall' | 'conveyor' | 'dockIn' | 'dockOut' | 'zone' | 'station' | 'parking';
+export type Tool = 'select' | 'rack' | 'wall' | 'conveyor' | 'dockIn' | 'dockOut' | 'zone' | 'station' | 'parking' | 'aisle' | 'transit' | 'stage' | 'triage' | 'charger';
 
 export const TOOL_LABEL: Record<Tool, string> = {
   select: 'Selecionar', rack: 'Rack', wall: 'Parede', conveyor: 'Esteira', dockIn: 'Doca entrada', dockOut: 'Doca saída', zone: 'Zona', station: 'Estação', parking: 'Estacionamento',
+  aisle: 'Rua', transit: 'Endereço transitório', stage: 'Stage', triage: 'Triagem', charger: 'Carga AMR',
 };
 
 const DEG = 180 / Math.PI;
@@ -142,10 +144,27 @@ export class Editor {
       zone: { name: 'Zona', length: 10, width: 6 },
       station: { name: 'Estação', length: 2.4, width: 1.6 },
       parking: { name: 'Estacionamento', length: 6, width: 4 },
+      aisle: { name: 'Rua', length: 30, width: 3.4 },
+      transit: { name: 'Endereço transitório', length: 5, width: 2.6 },
+      stage: { name: 'Stage', length: 12, width: 4 },
+      triage: { name: 'Triagem', length: 8, width: 4 },
+      charger: { name: 'Carga AMR', length: 3, width: 2, capacity: 1 },
     };
     const n = this.layout.elements.filter((e) => e.type === type).length + 1;
     const d = defaults[type];
-    return { id: newId(type), type, x: 0, z: 0, rot: 0, length: 5, width: 2, ...d, name: `${d.name} ${n}`, ...partial } as LayoutElement;
+    const el = { id: newId(type), type, x: 0, z: 0, rot: 0, length: 5, width: 2, ...d, name: `${d.name} ${n}`, ...partial } as LayoutElement;
+    const aisles = this.layout.elements.filter((e) => e.type === 'aisle');
+    if (type === 'aisle') {
+      el.aisle = nextAisleCode(aisles);
+      el.name = `Rua ${el.aisle}`;
+    } else if (type === 'transit') {
+      const a = aisleOf(el, aisles);
+      if (a) {
+        el.aisle = a;
+        el.name = `Transitório ${a}${this.layout.elements.filter((e) => e.type === 'transit' && e.aisle === a).length + 1}`;
+      }
+    } else if (type === 'triage') el.priority = n;
+    return el;
   }
 
   private add(el: LayoutElement) {
@@ -369,6 +388,11 @@ export class Editor {
         }
         case 'zone':
         case 'parking':
+        case 'aisle':
+        case 'transit':
+        case 'stage':
+        case 'triage':
+        case 'charger':
         case 'station': {
           const r = this.rectFromDrag(start, p);
           if (click) this.add(this.mk(this.tool, { x: start.x, z: start.z }));
@@ -413,7 +437,7 @@ export class Editor {
       const s = e.shiftKey ? 5 : this.snap || 0.5;
       this.nudge(k === 'arrowleft' ? -s : k === 'arrowright' ? s : 0, k === 'arrowup' ? -s : k === 'arrowdown' ? s : 0);
     } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-      const map: Record<string, Tool> = { v: 'select', k: 'rack', w: 'wall', c: 'conveyor', i: 'dockIn', o: 'dockOut', z: 'zone', e: 'station', p: 'parking' };
+      const map: Record<string, Tool> = { v: 'select', k: 'rack', w: 'wall', c: 'conveyor', i: 'dockIn', o: 'dockOut', z: 'zone', e: 'station', p: 'parking', a: 'aisle', t: 'transit', g: 'stage', x: 'triage', b: 'charger' };
       if (map[k]) this.setTool(map[k]);
     }
   }

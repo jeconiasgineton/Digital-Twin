@@ -149,6 +149,11 @@ const ELEMENT_ALIASES: Record<string, LayoutElement['type']> = {
   zona: 'zone', area: 'zone', zone: 'zone',
   estacao: 'station', station: 'station',
   estacionamento: 'parking', parking: 'parking',
+  rua: 'aisle', corredor: 'aisle', aisle: 'aisle',
+  transitorio: 'transit', endereco_transitorio: 'transit', transit: 'transit',
+  stage: 'stage', stage_recebimento: 'stage',
+  triagem: 'triage', area_triagem: 'triage', triage: 'triage',
+  carga_amr: 'charger', carregador: 'charger', carga: 'charger', charger: 'charger',
 };
 
 export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<ImportResult> {
@@ -314,6 +319,9 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
         levels: type === 'rack' ? Math.round(num(pick(r, 'niveis'), 4)!) : undefined, rows: type === 'rack' ? Math.round(num(pick(r, 'fileiras'), width > 1.6 ? 2 : 1)!) : undefined,
         pickFace: type === 'rack' ? ['s', 'sim', '1', 'true', 'x'].includes(picking) : undefined,
         speed: type === 'conveyor' ? num(pick(r, 'velocidade'), 0.6) : undefined,
+        capacity: ['transit', 'stage', 'triage', 'charger'].includes(type) && num(pick(r, 'capacidade', 'capacity')) !== undefined ? Math.round(num(pick(r, 'capacidade', 'capacity'))!) : undefined,
+        aisle: (type === 'aisle' || type === 'transit') && pick(r, 'rua', 'aisle') ? String(pick(r, 'rua', 'aisle')).trim().toUpperCase() : undefined,
+        priority: type === 'triage' && num(pick(r, 'prioridade', 'priority')) !== undefined ? Math.round(num(pick(r, 'prioridade', 'priority'))!) : undefined,
       });
     }
     if (els.length) {
@@ -370,7 +378,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     'Abas: Parametros (chave/valor), Recursos, Demanda (24 linhas), Operacoes (distribuições de tempo em segundos), SKUs (curva ABC) e Layout (opcional).',
     'Se a aba Layout estiver vazia/ausente, o galpão é gerado a partir dos parâmetros docas_entrada, docas_saida, fileiras_rack, vaos_por_fileira, niveis, esteiras e estacoes.',
     'Distribuições aceitas: constante(a) | triangular(mín, moda, máx) | normal(média, desvio) | lognormal(média, desvio) | exponencial(média) | uniforme(mín, máx).',
-    'Layout: X/Z em metros (origem no canto noroeste), Rot em graus (sentido horário). Para parede e esteira (X,Z) é o ponto inicial; demais elementos usam o centro.',
+    'Layout: X/Z em metros (origem no canto noroeste), Rot em graus (sentido horário). Para parede e esteira (X,Z) é o ponto inicial; demais elementos usam o centro. Tipos de área: rua (Rua = código), endereco_transitorio (Rua, Capacidade), stage, triagem (Capacidade, Prioridade) e carga_amr (Capacidade = vagas). Capacidade vazia = calculada pela área.',
     'Docas: Rot 0 = abertura voltada para o sul (+Z); Rot 180 = voltada para o norte. Porcentagens podem ser escritas como 85 ou 85% ou 0,85.',
   ].forEach((t, i) => {
     const row = info.addRow([t]);
@@ -445,10 +453,10 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   styleHeader(s);
 
   const l = wb.addWorksheet('Layout');
-  l.columns = ['Tipo', 'Nome', 'X', 'Z', 'Rot', 'Comprimento', 'Largura', 'Vaos', 'Niveis', 'Fileiras', 'Picking', 'Velocidade'].map((h) => ({ header: h, width: h === 'Nome' ? 30 : 13 }));
-  const tname: Record<string, string> = { rack: 'rack', dockIn: 'doca_entrada', dockOut: 'doca_saida', conveyor: 'esteira', wall: 'parede', zone: 'zona', station: 'estacao', parking: 'estacionamento' };
+  l.columns = ['Tipo', 'Nome', 'X', 'Z', 'Rot', 'Comprimento', 'Largura', 'Vaos', 'Niveis', 'Fileiras', 'Picking', 'Velocidade', 'Capacidade', 'Rua', 'Prioridade'].map((h) => ({ header: h, width: h === 'Nome' ? 30 : 13 }));
+  const tname: Record<string, string> = { rack: 'rack', dockIn: 'doca_entrada', dockOut: 'doca_saida', conveyor: 'esteira', wall: 'parede', zone: 'zona', station: 'estacao', parking: 'estacionamento', aisle: 'rua', transit: 'endereco_transitorio', stage: 'stage', triage: 'triagem', charger: 'carga_amr' };
   for (const e of layout?.elements ?? [])
-    l.addRow([tname[e.type], e.name, +e.x.toFixed(2), +e.z.toFixed(2), +e.rot.toFixed(1), +e.length.toFixed(2), +e.width.toFixed(2), e.bays ?? null, e.levels ?? null, e.rows ?? null, e.pickFace ? 'S' : null, e.speed ?? null]);
+    l.addRow([tname[e.type], e.name, +e.x.toFixed(2), +e.z.toFixed(2), +e.rot.toFixed(1), +e.length.toFixed(2), +e.width.toFixed(2), e.bays ?? null, e.levels ?? null, e.rows ?? null, e.pickFace ? 'S' : null, e.speed ?? null, e.capacity ?? null, e.aisle ?? null, e.priority ?? null]);
   styleHeader(l);
   return wb;
 }

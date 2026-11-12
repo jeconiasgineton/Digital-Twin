@@ -1,4 +1,5 @@
 import type { Layout, LayoutElement } from './types';
+import { aisleCode } from './areas';
 
 export interface LayoutParams {
   docksIn: number;
@@ -70,8 +71,19 @@ export function generateLayout(p: LayoutParams): Layout {
       });
     }
   }
-  // zonas
-  add({ type: 'zone', name: 'Conferência/Staging entrada', x: W / 2, z: 8.5, rot: 0, length: Math.min(W - 10, p.docksIn * dockPitch + 4), width: 5 });
+  // ruas (corredores entre/ao redor das fileiras de racks) e um endereço transitório na ponta de cada uma
+  const aisleLen = cols * rackLen + crossAisle;
+  for (let k = 0; k <= p.rackRows; k++) {
+    const code = aisleCode(k);
+    const z = zoneN + k * (rackDepth + aisle) + aisle / 2;
+    add({ type: 'aisle', name: `Rua ${code}`, aisle: code, x: W / 2, z, rot: 0, length: aisleLen, width: aisle });
+    add({ type: 'transit', name: `Transitório ${code}1`, aisle: code, x: W / 2 - aisleLen / 2 + 3, z, rot: 0, length: 5, width: Math.max(1.5, aisle - 0.8) });
+  }
+  // stage, triagem e carga de AMR
+  add({ type: 'stage', name: 'Stage entrada', x: W / 2, z: 8.5, rot: 0, length: Math.min(W - 10, p.docksIn * dockPitch + 4), width: 5 });
+  add({ type: 'triage', name: 'Triagem 1', priority: 1, x: W - 10, z: 8, rot: 0, length: 8, width: 4 });
+  add({ type: 'triage', name: 'Triagem 2', priority: 2, x: W - 10, z: 13, rot: 0, length: 8, width: 4 });
+  add({ type: 'charger', name: 'Carga AMR 1', x: 13, z: 6, rot: 0, length: 3, width: 2, capacity: 1 });
   add({ type: 'zone', name: 'Staging expedição', x: W / 2, z: D - 8.5, rot: 0, length: Math.min(W - 10, p.docksOut * dockPitch + 4), width: 5 });
   add({ type: 'parking', name: 'Estacionamento de empilhadeiras', x: 6, z: 6, rot: 0, length: 6, width: 4 });
 

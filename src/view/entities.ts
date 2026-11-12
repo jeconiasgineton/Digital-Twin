@@ -36,6 +36,11 @@ export const M = {
   zoneStaging: new THREE.MeshBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.22, depthWrite: false }),
   zoneGeneric: new THREE.MeshBasicMaterial({ color: 0x94a3b8, transparent: true, opacity: 0.28, depthWrite: false }),
   parking: new THREE.MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.35, depthWrite: false }),
+  aisle: new THREE.MeshBasicMaterial({ color: 0x64748b, transparent: true, opacity: 0.16, depthWrite: false }),
+  transit: new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.45, depthWrite: false }),
+  stage: new THREE.MeshBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.3, depthWrite: false }),
+  triage: new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.3, depthWrite: false }),
+  charger: new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.4, depthWrite: false }),
   selected: new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.25, depthWrite: false }),
 };
 
@@ -275,6 +280,24 @@ export function buildParking(el: LayoutElement): THREE.Group {
   const e = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(el.length, el.width)), new THREE.LineBasicMaterial({ color: 0xca8a04 }));
   e.rotation.x = -Math.PI / 2;
   e.position.y = 0.03;
+  g.add(e);
+  return g;
+}
+
+const AREA_EDGE: Record<string, number> = { aisle: 0x64748b, transit: 0xd97706, stage: 0x2563eb, triage: 0xdc2626, charger: 0x16a34a };
+const AREA_Y: Record<string, number> = { aisle: 0.015, transit: 0.04, stage: 0.025, triage: 0.025, charger: 0.03 };
+
+/** área plana de piso (rua, endereço transitório, stage, triagem, estação de carga) */
+export function buildArea(el: LayoutElement): THREE.Group {
+  const g = new THREE.Group();
+  const y = AREA_Y[el.type] ?? 0.02;
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(el.length, el.width), (M as any)[el.type]);
+  p.rotation.x = -Math.PI / 2;
+  p.position.y = y;
+  g.add(p);
+  const e = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.PlaneGeometry(el.length, el.width)), new THREE.LineBasicMaterial({ color: AREA_EDGE[el.type] ?? 0x64748b }));
+  e.rotation.x = -Math.PI / 2;
+  e.position.y = y + 0.01;
   g.add(e);
   return g;
 }

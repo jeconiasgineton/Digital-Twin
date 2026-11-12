@@ -1,4 +1,5 @@
 import type { Layout, LayoutElement, Scenario } from '../model/types';
+import { aisleCodeOf, aisleOf, areaCapacity } from '../model/areas';
 import {
   type DistField, type NavGrid, type Pt, astar, buildNavGrid, cellCenter, cellOf, dijkstraField, dist, fieldPath,
   linearEnds, nearestFree, pathLength, simplifyPath, toWorld,
@@ -87,6 +88,19 @@ export function findSlot(r: RackRT, want: number, start: number): number {
   return -1;
 }
 
+/** área com capacidade (stage, endereço transitório, triagem, estação de carga) em tempo de execução */
+export interface AreaRT {
+  idx: number;
+  el: LayoutElement;
+  capacity: number;
+  /** paletes (ou veículos, no caso de estação de carga) presentes */
+  occupied: number;
+  /** ponto de trabalho (centro da área) */
+  pt: Pt;
+  /** rua (aisle e transit) */
+  aisle?: string;
+}
+
 /** Navegação: grade + campos de distância para pontos-chave + A* com cache para pares. */
 export class Nav {
   readonly grid: NavGrid;
@@ -172,6 +186,14 @@ export interface World {
   totalCapacity: number;
   /** racks por zona de ABC, ordenados por proximidade */
   zones: RackRT[][];
+  aisles: AreaRT[];
+  transits: AreaRT[];
+  /** endereços transitórios por rua */
+  transitsByAisle: Map<string, AreaRT[]>;
+  stages: AreaRT[];
+  /** áreas de triagem em ordem de prioridade */
+  triages: AreaRT[];
+  chargers: AreaRT[];
 }
 
 export interface ValidationIssue {
@@ -189,6 +211,14 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
   if (needOut && c('dockOut') === 0) out.push({ level: 'erro', msg: 'Há demanda de expedição, mas não há docas de saída.' });
   if (sc.ordersPerHour.some((v) => v > 0) && c('conveyor') === 0)
     out.push({ level: 'aviso', msg: 'Há pedidos de picking, mas não há esteiras: os operários levarão as caixas a pé até a doca de saída.' });
+  const aisles = layout.elements.filter((e) => e.type === 'aisle');
+  const codes = aisles.map(aisleCodeOf);
+  for (const c of new Set(codes.filter((x, i) => codes.indexOf(x) !== i))) out.push({ level: 'aviso', msg: `Há mais de uma rua com o código "${c}".` });
+  for (const t of layout.elements.filter((e) => e.type === 'transit')) {
+    const a = aisleOf(t, aisles);
+    if (!a) out.push({ level: 'aviso', msg: `O endereço transitório "${t.name}" não pertence a nenhuma rua (desenhe uma rua ou informe o código).` });
+    else if (!codes.includes(a) && aisles.length) out.push({ level: 'aviso', msg: `O endereço transitório "${t.name}" aponta para a rua "${a}", que não existe.` });
+  }
   if (sc.forklifts.count < 1) out.push({ level: 'aviso', msg: 'Nenhuma empilhadeira configurada.' });
   if (sc.workers.count < 1 && sc.ordersPerHour.some((v) => v > 0)) out.push({ level: 'aviso', msg: 'Nenhum operário configurado para o picking.' });
   return out;
@@ -267,7 +297,18 @@ export function buildWorld(layout: Layout, sc: Scenario, sharedNav?: Nav): World
   let pickRacks = racks.filter((r) => r.pickFace);
   if (!pickRacks.length) pickRacks = racks;
 
-  return { layout, nav, racks, pickRacks, docksIn, docksOut, conveyors, stations, home, totalCapacity: totalCap, zones };
+  const area = (type: string) => els.filter((e) => e.type === type).map((e, idx): AreaRT => ({ idx, el: e, capacity: areaCapacity(e), occupied: 0, pt: { x: e.x, z: e.z } }));
+  const aisleEls = els.filter((e) => e.type === 'aisle');
+  const aislesRT = area('aisle').map((a) => ({ ...a, aisle: aisleCodeOf(a.el) }));
+  const transits = area('transit').map((a) => ({ ...a, aisle: aisleOf(a.el, aisleEls) }));
+  const transitsByAisle = new Map<string, AreaRT[]>();
+  for (const t of transits) if (t.aisle) transitsByAisle.set(t.aisle, [...(transitsByAisle.get(t.aisle) ?? []), t]);
+  const triages = area('triage').sort((a, b) => (a.el.priority ?? a.idx + 1) - (b.el.priority ?? b.idx + 1));
+
+  return {
+    layout, nav, racks, pickRacks, docksIn, docksOut, conveyors, stations, home, totalCapacity: totalCap, zones,
+    aisles: aislesRT, transits, transitsByAisle, stages: area('stage'), triages, chargers: area('charger'),
+  };
 }
 
 /** distância média (m) entre doca e posições de rack – usada pela análise analítica */

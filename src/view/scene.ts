@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Layout, LayoutElement } from '../model/types';
 import type { Pt } from '../math/spatial';
 import {
-  type RackVis, M, buildConveyor, buildDock, buildParking, buildRack, buildStation, buildWall, buildZone, makeLabel,
+  type RackVis, M, buildArea, buildConveyor, buildDock, buildParking, buildRack, buildStation, buildWall, buildZone, makeLabel,
 } from './entities';
 
 const DEG = Math.PI / 180;
@@ -198,6 +198,13 @@ export class SceneView {
       case 'parking':
         group = buildParking(el);
         break;
+      case 'aisle':
+      case 'transit':
+      case 'stage':
+      case 'triage':
+      case 'charger':
+        group = buildArea(el);
+        break;
       default:
         group = buildZone(el, /staging|confer|expedi/i.test(el.name));
     }
@@ -206,7 +213,7 @@ export class SceneView {
     // caixa invisível usada somente para seleção (estruturas vazadas como racks são difíceis de clicar)
     {
       const lin = el.type === 'wall' || el.type === 'conveyor';
-      const ph = el.type === 'rack' ? (el.levels ?? 4) * this.levelHeight + 0.3 : el.type === 'wall' ? 5 : el.type === 'zone' || el.type === 'parking' ? 0.3 : el.type === 'conveyor' ? 1.1 : 2.5;
+      const ph = el.type === 'rack' ? (el.levels ?? 4) * this.levelHeight + 0.3 : el.type === 'wall' ? 5 : el.type === 'zone' || el.type === 'parking' || el.type === 'aisle' || el.type === 'transit' || el.type === 'stage' || el.type === 'triage' || el.type === 'charger' ? 0.3 : el.type === 'conveyor' ? 1.1 : 2.5;
       const pd = el.type === 'dockIn' || el.type === 'dockOut' ? 3 : Math.max(el.width, 0.7);
       const proxy = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ visible: false }));
       proxy.scale.set(el.length, ph, pd);
@@ -218,7 +225,7 @@ export class SceneView {
     group.traverse((o) => (o.userData.id = el.id));
     const v: ElementVis = { el, group: wrap, rack, conveyor };
     this.place(v);
-    if (this.showLabels && (el.type === 'dockIn' || el.type === 'dockOut' || el.type === 'rack' || el.type === 'zone' || el.type === 'station')) {
+    if (this.showLabels && (el.type === 'dockIn' || el.type === 'dockOut' || el.type === 'rack' || el.type === 'zone' || el.type === 'station' || el.type === 'transit' || el.type === 'stage' || el.type === 'triage')) {
       const sp = makeLabel(el.name, el.type === 'rack' ? 0.9 : 1.2);
       sp.position.set(0, el.type === 'rack' ? (el.levels ?? 4) * this.levelHeight + 1.5 : 5.6, 0);
       wrap.add(sp);
@@ -340,7 +347,7 @@ export class SceneView {
     // prefere elementos não-parede/zona quando sobrepostos
     const rank = (id: string) => {
       const t = this.layout.elements.find((e) => e.id === id)?.type;
-      return t === 'zone' || t === 'parking' ? 2 : t === 'wall' ? 1 : 0;
+      return t === 'aisle' ? 3 : t === 'zone' || t === 'parking' || t === 'stage' || t === 'triage' ? 2 : t === 'wall' ? 1 : 0;
     };
     hits.sort((a, b) => rank(a.object.userData.id) - rank(b.object.userData.id) || a.distance - b.distance);
     return hits.length ? (hits[0].object.userData.id as string) : null;

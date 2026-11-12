@@ -3,17 +3,21 @@ import { defaultLayoutParams, generateLayout, type LayoutParams } from '../model
 import { parseDxf } from '../io/dxf';
 import { validate, buildWorld } from '../sim/world';
 import type { AppCtx } from './ctx';
+import { areaCapacity, PALLET_FLOOR_M2 } from '../model/areas';
 import { h, numField, pickFile, selField, textField, toast, fmt } from './dom';
 
 let genParams: LayoutParams = defaultLayoutParams();
 
 const TYPE_NAME: Record<string, string> = {
   rack: 'Estrutura porta-paletes', dockIn: 'Doca de recebimento', dockOut: 'Doca de expedição', conveyor: 'Esteira', wall: 'Parede', zone: 'Zona', station: 'Estação', parking: 'Estacionamento',
+  aisle: 'Rua', transit: 'Endereço transitório', stage: 'Stage (recebimento)', triage: 'Área de triagem', charger: 'Estação de carga AMR',
 };
 
 function section(title: string, body: HTMLElement | HTMLElement[], open = true) {
   return h('details', { open }, h('summary', null, title), h('div', { class: 'body' }, body));
 }
+
+const ctxRerender = (ctx: AppCtx) => ctx.rerender();
 
 export function propertiesBox(ctx: AppCtx): HTMLElement {
   const ids = ctx.editor.selection;
@@ -50,6 +54,17 @@ export function propertiesBox(ctx: AppCtx): HTMLElement {
       h('p', { class: 'note' }, `Capacidade: ${(el.bays ?? 1) * (el.levels ?? 1) * (el.rows ?? 1)} posições de palete.`),
     );
   }
+  if (el.type === 'aisle' || el.type === 'transit')
+    fields.push(textField(el.type === 'aisle' ? 'Código da rua' : 'Rua (vazio = rua que o contém)', () => el.aisle ?? '', (v) => ((el.aisle = v.trim().toUpperCase() || undefined), ed())));
+  if (el.type === 'transit' || el.type === 'stage' || el.type === 'triage' || el.type === 'charger') {
+    const unit = el.type === 'charger' ? 'vagas' : 'paletes';
+    fields.push(
+      numField(el.type === 'charger' ? 'Vagas de carga' : 'Capacidade', () => areaCapacity(el), (v) => ((el.capacity = Math.max(el.type === 'charger' ? 1 : 0, Math.round(v))), ed()), { step: 1, min: 0, unit }),
+      h('p', { class: 'note' }, el.type === 'charger' ? 'Quantos AMR carregam ao mesmo tempo.' : `Padrão pela área: ${Math.max(1, Math.floor((el.length * el.width) / PALLET_FLOOR_M2))} paletes (palete 1,2×1,0 m + 30% de folga). Edite para fixar outro valor.`),
+    );
+    if (el.type !== 'charger' && el.capacity !== undefined) fields.push(h('button', { class: 'b sm', onclick: () => { el.capacity = undefined; ed(); ctxRerender(ctx); } }, 'Voltar à capacidade pela área'));
+  }
+  if (el.type === 'triage') fields.push(numField('Prioridade de uso', () => el.priority ?? 1, (v) => ((el.priority = Math.max(1, Math.round(v))), ed()), { step: 1, min: 1, title: '1 = primeira. Ao lotar, o palete segue para a próxima.' }));
   if (el.type === 'conveyor') fields.push(numField('Velocidade', () => el.speed ?? 0.6, (v) => ((el.speed = v), ed()), { step: 0.1, min: 0.05, unit: 'm/s' }));
   box.append(
     h('div', { class: 'row sp' }, h('b', null, TYPE_NAME[el.type] ?? el.type), h('span', { class: 'note' }, el.id.slice(0, 8))),
@@ -78,6 +93,8 @@ export function renderLayoutPanel(ctx: AppCtx): HTMLElement {
         h('div', { class: 'card' }, h('div', { class: 'k' }, 'Posições de palete'), h('div', { class: 'v' }, fmt(world?.totalCapacity ?? 0, 0)), h('div', { class: 's' }, `${counts('rack')} racks`)),
         h('div', { class: 'card' }, h('div', { class: 'k' }, 'Área do piso'), h('div', { class: 'v' }, fmt(ctx.layout.floor.width * ctx.layout.floor.depth, 0)), h('div', { class: 's' }, `${fmt(ctx.layout.floor.width, 0)} × ${fmt(ctx.layout.floor.depth, 0)} m (m²)`)),
         h('div', { class: 'card' }, h('div', { class: 'k' }, 'Docas'), h('div', { class: 'v' }, `${counts('dockIn')} / ${counts('dockOut')}`), h('div', { class: 's' }, 'entrada / saída')),
+        h('div', { class: 'card' }, h('div', { class: 'k' }, 'Ruas / transitórios'), h('div', { class: 'v' }, `${counts('aisle')} / ${counts('transit')}`), h('div', { class: 's' }, `${fmt(ctx.layout.elements.filter((e) => e.type === 'transit').reduce((s, e) => s + areaCapacity(e), 0), 0)} paletes transitórios`)),
+        h('div', { class: 'card' }, h('div', { class: 'k' }, 'Stage / triagem'), h('div', { class: 'v' }, `${counts('stage')} / ${counts('triage')}`), h('div', { class: 's' }, `${fmt(ctx.layout.elements.filter((e) => e.type === 'stage').reduce((s, e) => s + areaCapacity(e), 0), 0)} / ${fmt(ctx.layout.elements.filter((e) => e.type === 'triage').reduce((s, e) => s + areaCapacity(e), 0), 0)} paletes`)),
         h('div', { class: 'card' }, h('div', { class: 'k' }, 'Esteiras / estações'), h('div', { class: 'v' }, `${counts('conveyor')} / ${counts('station')}`), h('div', { class: 's' }, `${fmt(ctx.layout.elements.filter((e) => e.type === 'conveyor').reduce((s, e) => s + e.length, 0), 0)} m de esteira`)),
       ),
       issues.length ? h('ul', { class: 'issues' }, issues.map((i) => h('li', { class: i.level === 'erro' ? 'err' : '' }, `${i.level === 'erro' ? '⛔' : '⚠️'} ${i.msg}`))) : h('p', { class: 'note' }, '✅ Layout consistente com o cenário.'),
@@ -119,7 +136,7 @@ export function renderLayoutPanel(ctx: AppCtx): HTMLElement {
       ),
     ], false),
     section('Atalhos', [
-      h('p', { class: 'note', html: '<b>V</b> selecionar · <b>K</b> rack · <b>W</b> parede (clique p/ cada vértice, duplo-clique termina) · <b>C</b> esteira · <b>I</b>/<b>O</b> docas (encaixam na parede) · <b>Z</b> zona · <b>E</b> estação · <b>P</b> estacionamento · <b>R</b> gira · <b>Ctrl+D</b> duplica · <b>Del</b> exclui · <b>Ctrl+Z/Y</b> desfaz/refaz · setas movem · <b>Shift</b> trava ortogonal ao desenhar paredes.' }),
+      h('p', { class: 'note', html: '<b>V</b> selecionar · <b>K</b> rack · <b>W</b> parede (clique p/ cada vértice, duplo-clique termina) · <b>C</b> esteira · <b>I</b>/<b>O</b> docas (encaixam na parede) · <b>Z</b> zona · <b>E</b> estação · <b>P</b> estacionamento · <b>A</b> rua · <b>T</b> endereço transitório · <b>G</b> stage · <b>X</b> triagem · <b>B</b> carga AMR · <b>R</b> gira · <b>Ctrl+D</b> duplica · <b>Del</b> exclui · <b>Ctrl+Z/Y</b> desfaz/refaz · setas movem · <b>Shift</b> trava ortogonal ao desenhar paredes.' }),
     ], false),
   );
   return root;

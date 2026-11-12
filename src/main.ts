@@ -163,8 +163,13 @@ const ICONS: Record<Tool, string> = {
   zone: '<rect x="4" y="5" width="16" height="14" rx="1" stroke-dasharray="3 2.5"/>',
   station: '<path d="M4 18h16M6 18v-7h12v7M9 11V7h6v4"/>',
   parking: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M10 16V8h3a2.5 2.5 0 010 5h-3"/>',
+  aisle: '<path d="M3 8h18M3 16h18"/><path d="M9 12h6m-2-2 2 2-2 2"/>',
+  transit: '<rect x="4" y="6" width="16" height="12" rx="1"/><path d="M8 10h8M8 14h8"/>',
+  stage: '<rect x="3" y="5" width="18" height="14" rx="1"/><path d="M7 15l2-2 2 2 2-3 4 3"/>',
+  triage: '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M8 8l8 8M16 8l-8 8"/>',
+  charger: '<rect x="6" y="6" width="12" height="12" rx="2"/><path d="M13 8l-3 4h4l-3 4"/>',
 };
-const TOOL_ORDER: Tool[] = ['select', 'rack', 'wall', 'conveyor', 'dockIn', 'dockOut', 'zone', 'station', 'parking'];
+const TOOL_ORDER: Tool[] = ['select', 'rack', 'wall', 'conveyor', 'dockIn', 'dockOut', 'zone', 'station', 'parking', 'aisle', 'transit', 'stage', 'triage', 'charger'];
 const HINTS: Record<Tool, string> = {
   select: 'Clique para selecionar · arraste para mover · R gira · Del exclui · botão direito move a câmera',
   rack: 'Arraste para desenhar um rack (comprimento = distância arrastada) ou clique para inserir um padrão',
@@ -175,13 +180,18 @@ const HINTS: Record<Tool, string> = {
   zone: 'Arraste para definir uma zona (staging, conferência…). Nomes com "staging/conferência/expedição" ficam azuis',
   station: 'Clique para inserir uma estação de embalagem/expedição (limita a consolidação de pedidos)',
   parking: 'Arraste para definir a área onde empilhadeiras/operários ficam estacionados no início',
+  aisle: 'Arraste para desenhar uma rua (corredor entre racks). Informe o código (A, B…) e a largura no painel',
+  transit: 'Arraste dentro de uma rua para definir um endereço transitório (local onde o palete é deixado entre etapas). Capacidade editável',
+  stage: 'Arraste para definir a área de stage do recebimento (paletes no chão aguardando conferência). Capacidade editável',
+  triage: 'Arraste para definir uma área de triagem (destino das avarias). Defina capacidade e prioridade de uso',
+  charger: 'Clique para posicionar uma estação de carga de AMR',
 };
 
 function renderTools() {
   const n = $('tools');
   n.innerHTML = '';
   TOOL_ORDER.forEach((t, i) => {
-    if (i === 1) n.append(h('div', { class: 'tsep' }));
+    if (i === 1 || i === 9) n.append(h('div', { class: 'tsep' }));
     const b = h('button', { class: 'tool', title: TOOL_LABEL[t], 'data-tool': t, onclick: () => ctx.editor.setTool(t) });
     b.innerHTML = `<svg viewBox="0 0 24 24">${ICONS[t]}</svg><span>${TOOL_LABEL[t].split(' ')[0]}</span>`;
     n.append(b);
