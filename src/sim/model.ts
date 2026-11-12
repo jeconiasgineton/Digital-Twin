@@ -3,7 +3,7 @@ import { Rng, sampleDist } from '../math/rng';
 import { mean, percentile } from '../math/stats';
 import type { Pt } from '../math/spatial';
 import { Pool, type PoolItem, Countdown, Sim, type Process } from './engine';
-import { type Agent, type ConveyorRT, type DockItem, type RackRT, type World, buildWorld } from './world';
+import { type Agent, type ConveyorRT, type DockItem, type RackRT, SLOT_FREE, SLOT_OCCUPIED, SLOT_RESERVED, type World, buildWorld, findSlot, slotAddr } from './world';
 export type { World };
 
 /** Interface opcional para animação 3D. */
@@ -128,7 +128,13 @@ export class SimModel {
     // ---- estoque inicial ----
     for (const r of w.racks) {
       const f = sc.initialOccupancy * (0.9 + 0.2 * this.rngRoute.next());
-      r.stock = Math.min(r.capacity, Math.round(r.capacity * f));
+      const n = Math.min(r.capacity, Math.round(r.capacity * f));
+      for (let i = 0; i < n; i++) {
+        const s = findSlot(r, SLOT_FREE, this.rngRoute.int(r.slots.length));
+        r.slots[s] = SLOT_OCCUPIED;
+        r.stock++;
+        r.occupied++;
+      }
     }
 
     // ---- processos ----
@@ -217,20 +223,35 @@ export class SimModel {
 
   private chooseRackGet(cls: 0 | 1 | 2): RackRT | null {
     const w = this.world;
-    let cands = w.zones[cls].filter((r) => r.stock > 0);
-    if (!cands.length || this.sc.slotting === 'random') cands = w.racks.filter((r) => r.stock > 0);
+    let cands = w.zones[cls].filter((r) => r.occupied > 0);
+    if (!cands.length || this.sc.slotting === 'random') cands = w.racks.filter((r) => r.occupied > 0);
     if (!cands.length) return null;
-    return cands[this.rngRoute.pick(cands.map((r) => r.stock))];
+    return cands[this.rngRoute.pick(cands.map((r) => r.occupied))];
   }
 
-  private liftTime(r: RackRT): number {
-    const level = 1 + this.rngRoute.int(r.levels);
-    const h = (level - 1) * this.sc.levelHeight;
+  /** reserva uma posição livre do rack (palete a caminho); devolve o índice da posição */
+  private reserveSlot(r: RackRT): number {
+    const i = findSlot(r, SLOT_FREE, this.rngRoute.int(r.slots.length));
+    r.slots[i] = SLOT_RESERVED;
+    r.stock++;
+    return i;
+  }
+
+  /** retira (libera) uma posição ocupada do rack; devolve o índice da posição */
+  private takeSlot(r: RackRT): number {
+    const i = findSlot(r, SLOT_OCCUPIED, this.rngRoute.int(r.slots.length));
+    r.slots[i] = SLOT_FREE;
+    r.stock--;
+    r.occupied--;
+    return i;
+  }
+
+  private liftTime(level0: number): number {
+    const h = level0 * this.sc.levelHeight;
     return (2 * h) / Math.max(0.05, this.sc.liftSpeed) + sampleDist(this.rngSvc, this.sc.ops.putawayPosition);
   }
 
-  private accessPoint(r: RackRT): Pt {
-    const bay = this.rngRoute.int(r.bays);
+  private accessPoint(r: RackRT, bay = this.rngRoute.int(r.bays)): Pt {
     return r.access[bay][this.rngRoute.int(2)];
   }
 
@@ -325,10 +346,13 @@ export class SimModel {
       this.forklifts.release(fk);
       return;
     }
-    rack.stock++;
-    const ap = this.accessPoint(rack);
+    const slot = this.reserveSlot(rack);
+    const addr = slotAddr(rack, slot);
+    const ap = this.accessPoint(rack, addr.bay);
     yield this.go(fk, ap, true);
-    yield this.liftTime(rack);
+    yield this.liftTime(addr.level);
+    rack.slots[slot] = SLOT_OCCUPIED;
+    rack.occupied++;
     fk.tasks++;
     this.forklifts.release(fk);
     c.palletsDone++;
@@ -370,12 +394,12 @@ export class SimModel {
       loaded.tick();
       return;
     }
-    rack.stock--;
+    const addr = slotAddr(rack, this.takeSlot(rack));
     c.palletsRequested++;
-    const ap = this.accessPoint(rack);
+    const ap = this.accessPoint(rack, addr.bay);
     const fk: Agent = yield this.forklifts.request(ap);
     yield this.go(fk, ap, false);
-    yield this.liftTime(rack);
+    yield this.liftTime(addr.level);
     yield this.go(fk, dock.inner, true);
     yield sampleDist(this.rngSvc, this.sc.ops.loadPallet);
     fk.tasks++;

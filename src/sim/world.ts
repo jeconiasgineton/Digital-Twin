@@ -37,13 +37,54 @@ export interface RackRT {
   levels: number;
   rows: number;
   capacity: number;
+  /** posições comprometidas (ocupadas + reservadas): base do cálculo de ocupação */
   stock: number;
+  /** posições efetivamente ocupadas por palete (disponíveis para retirada) */
+  occupied: number;
+  /** estado de cada posição: ver SLOT_*; índice = (fileira * vãos + vão) * níveis + nível */
+  slots: Uint8Array;
+  /** código do rack usado no endereço (ex.: R01) */
+  label: string;
   pickFace: boolean;
   zone: 0 | 1 | 2; // A, B, C
   /** distância média até docas (para ranking) */
   rank: number;
   /** pontos de acesso (por vão e lado), pré-computados */
   access: Pt[][];
+}
+
+export const SLOT_FREE = 0;
+export const SLOT_OCCUPIED = 1;
+export const SLOT_RESERVED = 2;
+
+export interface SlotAddr {
+  row: number;
+  bay: number;
+  level: number;
+}
+
+export function slotAddr(r: RackRT, idx: number): SlotAddr {
+  const level = idx % r.levels;
+  const rb = (idx - level) / r.levels;
+  return { row: Math.floor(rb / r.bays), bay: rb % r.bays, level };
+}
+
+/** endereço legível: código do rack + vão (2 dígitos) + nível (ex.: R01-023); fileira só em racks duplos */
+export function slotLabel(r: RackRT, idx: number): string {
+  const a = slotAddr(r, idx);
+  const row = r.rows > 1 ? `.${a.row + 1}` : '';
+  return `${r.label}${row}-${String(a.bay + 1).padStart(2, '0')}${a.level + 1}`;
+}
+
+/** sorteia uma posição no estado `want` (sonda linear a partir de um índice aleatório); -1 se não houver */
+export function findSlot(r: RackRT, want: number, start: number): number {
+  const n = r.slots.length;
+  if (want === SLOT_FREE ? r.stock >= n : r.occupied <= 0) return -1;
+  for (let k = 0; k < n; k++) {
+    const i = (start + k) % n;
+    if (r.slots[i] === want) return i;
+  }
+  return -1;
 }
 
 /** Navegação: grade + campos de distância para pontos-chave + A* com cache para pares. */
@@ -197,7 +238,7 @@ export function buildWorld(layout: Layout, sc: Scenario, sharedNav?: Nav): World
         const lx = -e.length / 2 + ((cb + 0.5) * e.length) / bays;
         access.push([toWorld(e, lx, e.width / 2 + aisleOff), toWorld(e, lx, -(e.width / 2 + aisleOff))]);
       }
-      return { idx, el: e, bays, levels, rows, capacity: bays * levels * rows, stock: 0, pickFace: !!e.pickFace, zone: 2 as 0 | 1 | 2, rank: 0, access };
+      return { idx, el: e, bays, levels, rows, capacity: bays * levels * rows, stock: 0, occupied: 0, slots: new Uint8Array(bays * levels * rows), label: `R${String(idx + 1).padStart(2, '0')}`, pickFace: !!e.pickFace, zone: 2 as 0 | 1 | 2, rank: 0, access };
     });
 
   // ranking por proximidade média das docas (ABC slotting)
