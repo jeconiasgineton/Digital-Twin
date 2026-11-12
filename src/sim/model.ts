@@ -1,5 +1,6 @@
 import type { ArrivalSpec, EquipmentKind, FleetSpec, Layout, ReplicationResult, RunKpis, Scenario, HourSeries, VehicleType, PeopleRole } from '../model/types';
 import { trailerDepthM } from '../model/receiving';
+import { startPalletProcess } from './workflow';
 import { amrChargeHours } from '../model/equipment';
 import { PEOPLE_ROLES, breakMinutesPerDay, effectiveVehicles, offsetInShift, waveOf } from '../model/traffic';
 import { Rng, sampleDist } from '../math/rng';
@@ -74,25 +75,25 @@ export class SimModel {
   /** pools por tipo de equipamento (empilhadeira = this.forklifts) */
   readonly eqPools: Record<EquipmentKind, Pool<Agent>>;
   /** posições de stage (uma por palete de capacidade); null = layout sem stage (sem limite) */
-  private stageSlots: Pool<PoolItem> | null = null;
-  private stageInUse = 0;
-  private stageMax = 0;
-  private readonly stageWait: number[] = [];
-  private readonly checkCycle: number[] = [];
+  stageSlots: Pool<PoolItem> | null = null;
+  stageInUse = 0;
+  stageMax = 0;
+  readonly stageWait: number[] = [];
+  readonly checkCycle: number[] = [];
   /** espaço dos endereços transitórios por rua (uma posição por palete de capacidade) */
-  private transitPools = new Map<string, Pool<PoolItem & { area: AreaRT }>>();
-  private transitInUse = 0;
-  private transitMax = 0;
-  private readonly transitWait: number[] = [];
-  private phased = 0;
-  private stored = 0;
+  transitPools = new Map<string, Pool<PoolItem & { area: AreaRT }>>();
+  transitInUse = 0;
+  transitMax = 0;
+  readonly transitWait: number[] = [];
+  phased = 0;
+  stored = 0;
   /** AMR: bateria (s de trabalho desde a última carga completa) e ciclo de carga em andamento */
   private amrState = new Map<number, { batt: number; cycling: boolean }>();
   private chargerSlots: Pool<PoolItem> | null = null;
   private amrCharges = 0;
   private amrChargeSec = 0;
-  private rngDmg: Rng;
-  private skuCartons: number[] = [];
+  rngDmg: Rng;
+  skuCartons: number[] = [];
   /** estatísticas por tipo de veículo (índice = posição em effectiveVehicles) */
   private vStats: { name: string; n: number; dockSec: number; waitSec: number }[] = [];
   readonly dockWaitIn: number[] = [];
@@ -106,14 +107,14 @@ export class SimModel {
   /** contadores por hora absoluta de simulação */
   private hourCounts: { in: number; out: number; ord: number }[] = [];
   private rngArr: Rng;
-  private rngSvc: Rng;
-  private rngRoute: Rng;
+  rngSvc: Rng;
+  rngRoute: Rng;
   private rngVeh: Rng;
   private rngDelay: Rng;
   private vehIn: VehicleType[];
   private vehOut: VehicleType[];
   private skuW: number[];
-  private skuCls: (0 | 1 | 2)[];
+  skuCls: (0 | 1 | 2)[];
   private truckSeq = 0;
   private pickBands: RackRT[][];
 
@@ -239,7 +240,7 @@ export class SimModel {
 
   /* ---------------- utilidades ---------------- */
 
-  private go(ag: Agent, to: Pt, carrying: boolean): number {
+  go(ag: Agent, to: Pt, carrying: boolean): number {
     const from = { x: ag.x, z: ag.z };
     const d = this.world.nav.distance(from, to);
     const v = carrying ? ag.speedLoaded : ag.speedEmpty;
@@ -251,30 +252,30 @@ export class SimModel {
     return t;
   }
 
-  private sum(d: Scenario['ops']['pickCarton'], n: number): number {
+  sum(d: Scenario['ops']['pickCarton'], n: number): number {
     const k = Math.min(n, 25);
     let s = 0;
     for (let i = 0; i < k; i++) s += sampleDist(this.rngSvc, d);
     return n > k ? (s / k) * n : s;
   }
 
-  private get measuring() {
+  get measuring() {
     return this.sim.now >= this.warm;
   }
 
-  private hourBucket() {
+  hourBucket() {
     const h = Math.floor(this.sim.now / 3600);
     while (this.hourCounts.length <= h) this.hourCounts.push({ in: 0, out: 0, ord: 0 });
     return this.hourCounts[h];
   }
 
-  private pickSku(): { idx: number; cls: 0 | 1 | 2 } {
+  pickSku(): { idx: number; cls: 0 | 1 | 2 } {
     const i = this.rngRoute.pick(this.skuW);
     return { idx: i, cls: this.skuCls[i] };
   }
 
   /** endereçamento de guarda (putaway) */
-  private chooseRackPut(cls: 0 | 1 | 2, from: Pt): RackRT | null {
+  chooseRackPut(cls: 0 | 1 | 2, from: Pt): RackRT | null {
     const w = this.world;
     const free = (r: RackRT) => r.capacity - r.stock;
     const pol = this.sc.slotting;
@@ -297,7 +298,7 @@ export class SimModel {
     return cands[this.rngRoute.pick(cands.map(free))];
   }
 
-  private chooseRackGet(cls: 0 | 1 | 2): RackRT | null {
+  chooseRackGet(cls: 0 | 1 | 2): RackRT | null {
     const w = this.world;
     let cands = w.zones[cls].filter((r) => r.occupied > 0);
     if (!cands.length || this.sc.slotting === 'random') cands = w.racks.filter((r) => r.occupied > 0);
@@ -306,7 +307,7 @@ export class SimModel {
   }
 
   /** reserva uma posição livre do rack (palete a caminho); devolve o índice da posição */
-  private reserveSlot(r: RackRT): number {
+  reserveSlot(r: RackRT): number {
     const i = findSlot(r, SLOT_FREE, this.rngRoute.int(r.slots.length));
     r.slots[i] = SLOT_RESERVED;
     r.stock++;
@@ -314,7 +315,7 @@ export class SimModel {
   }
 
   /** retira (libera) uma posição ocupada do rack; devolve o índice da posição */
-  private takeSlot(r: RackRT): number {
+  takeSlot(r: RackRT): number {
     const i = findSlot(r, SLOT_OCCUPIED, this.rngRoute.int(r.slots.length));
     r.slots[i] = SLOT_FREE;
     r.stock--;
@@ -322,12 +323,12 @@ export class SimModel {
     return i;
   }
 
-  private liftTime(level0: number): number {
+  liftTime(level0: number): number {
     const h = level0 * this.sc.levelHeight;
     return (2 * h) / Math.max(0.05, this.sc.liftSpeed) + sampleDist(this.rngSvc, this.sc.ops.putawayPosition);
   }
 
-  private accessPoint(r: RackRT, bay = this.rngRoute.int(r.bays), side: 0 | 1 = this.rngRoute.int(2) as 0 | 1): Pt {
+  accessPoint(r: RackRT, bay = this.rngRoute.int(r.bays), side: 0 | 1 = this.rngRoute.int(2) as 0 | 1): Pt {
     return r.access[bay][side];
   }
 
@@ -465,7 +466,8 @@ export class SimModel {
     yield turn;
     const n = this.palletsPerTruck(v.pallets);
     const unloaded = new Countdown(this.sim, n);
-    for (let i = 0; i < n; i++) this.sim.spawn(this.inboundPallet(dock, unloaded, tDock, i, v.trailerLengthM));
+    const custom = this.sc.useCustomProcesses ? this.sc.processes.find((p) => p.trigger === 'unloadPallet') : undefined;
+    for (let i = 0; i < n; i++) this.sim.spawn(custom ? startPalletProcess(this, custom, dock, tDock, i, v.trailerLengthM, unloaded) : this.inboundPallet(dock, unloaded, tDock, i, v.trailerLengthM));
     yield unloaded.signal;
     this.dockIn.release(dock);
     this.tracer?.truckLeft(id, 'in', this.sim.now);
@@ -476,7 +478,7 @@ export class SimModel {
   }
 
   /** escolhe, entre os pools permitidos, o que tem equipamento ocioso agora (senão o menos congestionado) */
-  private choosePool(pools: Pool<Agent>[]): Pool<Agent> {
+  choosePool(pools: Pool<Agent>[]): Pool<Agent> {
     const ok = pools.filter((p) => p.items.length > 0);
     if (!ok.length) return this.forklifts;
     const idle = ok.find((p) => p.idleCount > 0);
@@ -494,14 +496,14 @@ export class SimModel {
   }
 
   /** movimentação dentro do baú (ida vazio, volta carregado) conforme a profundidade do palete */
-  private inTrailer(ag: Agent, d: number): number {
+  inTrailer(ag: Agent, d: number): number {
     if (d <= 0) return 0;
     if (this.sim.now >= this.warm) ag.km += (2 * d) / 1000;
     return travelTime(d, ag.speedEmpty, this.sc.accel) + travelTime(d, ag.speedLoaded, this.sc.accel);
   }
 
   /** área de triagem: a primeira por prioridade com espaço; se todas lotadas, estoura na última */
-  private chooseTriage(): { area: AreaRT | null; overflow: boolean } {
+  chooseTriage(): { area: AreaRT | null; overflow: boolean } {
     const ts = this.world.triages;
     if (!ts.length) return { area: null, overflow: true };
     const free = ts.find((t) => t.occupied < t.capacity);

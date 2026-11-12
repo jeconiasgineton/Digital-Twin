@@ -3,6 +3,7 @@ import type { ArrivalSpec, BreakSpec, Dist, DistKind, EquipmentKind, EquipmentSp
 import { defaultScenario } from '../model/defaults';
 import { defaultEquipment, normalizeEquipment } from '../model/equipment';
 import { PEOPLE_ROLES } from '../model/traffic';
+import { STEP_LABEL, portsOf, type ProcessDef, type Step, type StepType } from '../model/process';
 import { defaultLayoutParams, generateLayout, newId, type LayoutParams } from '../model/layoutGen';
 import { linearEnds, toWorld } from '../math/spatial';
 
@@ -263,6 +264,8 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
       if (kinds.length) sc.storage.step1With = kinds;
       else warn('armazenagem_etapa1_equipamentos: use paleteira_manual, transpaleteira e/ou amr.');
     }
+    const cp = norm(g('processos_personalizados'));
+    if (cp) sc.useCustomProcesses = ['s', 'sim', '1', 'true', 'x'].includes(cp);
     setN('limite_espera_doca_min', (v) => (sc.dockWaitThresholdMin = v), [0, 600]);
     const amrBreaks = norm(g('amr_trabalha_intervalos'));
     if (amrBreaks) sc.calendar.amrWorksDuringBreaks = ['s', 'sim', '1', 'true', 'x'].includes(amrBreaks);
@@ -329,6 +332,37 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     }
     normalizeEquipment(sc);
   } else warn('Aba "Recursos" não encontrada – usando padrão.');
+
+  // ---- Processos personalizados ----
+  const wsPr = findSheet(wb, ['Processos', 'Processes']);
+  if (wsPr) {
+    const procs = new Map<string, ProcessDef>();
+    for (const r of table(wsPr).rows) {
+      const pid = String(pick(r, 'processo_id', 'processo') ?? '').trim();
+      const type = norm(pick(r, 'tipo')) as StepType;
+      if (!pid || !(type in STEP_LABEL)) {
+        if (pid) warn(`Processos: tipo de bloco "${pick(r, 'tipo')}" desconhecido.`);
+        continue;
+      }
+      let def = procs.get(pid);
+      if (!def) {
+        def = { id: pid, name: String(pick(r, 'nome_processo', 'nome') ?? pid), trigger: 'unloadPallet', steps: [] };
+        procs.set(pid, def);
+      }
+      let extra: Record<string, unknown> = {};
+      let outs: Record<string, unknown> = {};
+      try {
+        extra = JSON.parse(String(pick(r, 'parametros') ?? '{}'));
+        outs = JSON.parse(String(pick(r, 'saidas') ?? '{}'));
+      } catch {
+        warn(`Processos: parâmetros inválidos no bloco "${pick(r, 'bloco_id')}" do processo "${pid}".`);
+      }
+      const label = pick(r, 'rotulo');
+      def.steps.push({ ...extra, ...outs, id: String(pick(r, 'bloco_id')), type, x: num(pick(r, 'x'), 0)!, y: num(pick(r, 'y'), 0)!, ...(label ? { label: String(label) } : {}) } as unknown as Step);
+    }
+    sc.processes = [...procs.values()];
+    if (sc.processes.length) found.push('Processos');
+  }
 
   // ---- Veículos ----
   const wsV = findSheet(wb, ['Veiculos', 'Veículos', 'Vehicles']);
@@ -508,7 +542,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   [
     'DIGITAL TWIN LOGÍSTICO – Planilha de dimensionamento',
     '',
-    'Abas: Parametros (chave/valor), Recursos (empilhadeira, paleteira_manual, transpaleteira, amr, operario, conferente; AMR: Autonomia_min, Gatilho_carga, Carga_min, Setup_min, Carga_inicio_turno/fim_turno, Carga_horarios no formato h;h), Veiculos (tipos de veículo), Intervalos (pausas), Demanda (24 linhas), Operacoes (distribuições de tempo em segundos), SKUs (curva ABC) e Layout (opcional).',
+    'Processos (blocos de ações genéricas: uma linha por bloco; Saidas e Parametros em JSON, editados de preferência no editor visual). Abas: Parametros (chave/valor), Recursos (empilhadeira, paleteira_manual, transpaleteira, amr, operario, conferente; AMR: Autonomia_min, Gatilho_carga, Carga_min, Setup_min, Carga_inicio_turno/fim_turno, Carga_horarios no formato h;h), Veiculos (tipos de veículo), Intervalos (pausas), Demanda (24 linhas), Operacoes (distribuições de tempo em segundos), SKUs (curva ABC) e Layout (opcional).',
     'Veiculos: Manobra/docagem em segundos (Distribuicao + P1..P3, ex.: constante 180 = 3 min); Participacao em % da frota. Sem linhas = um tipo único com os parâmetros gerais. Intervalos: Inicio = hora do dia (12 ou 12:30); Grupos = todos ou empilhadeira;operario;conferente; Escalonamento = todos (juntos) | metade (metade por vez) | percentual (use a coluna Percentual).',
     'Chegadas (Parametros): chegada_entrada_modo / chegada_saida_modo = aleatorio | intervalo | agendado, com intervalo_min, horarios (h;h) e atraso_*_prob/media_min/desvio_min.',
     'Se a aba Layout estiver vazia/ausente, o galpão é gerado a partir dos parâmetros docas_entrada, docas_saida, fileiras_rack, vaos_por_fileira, niveis, esteiras e estacoes.',
@@ -561,6 +595,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['descarga_equipamentos', sc.receiving.unloadWith.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Equipamentos que podem descarregar o baú (o disponível é acionado), separados por ;'],
     ['armazenagem_modo', sc.storage.mode === 'phased' ? 'faseada' : 'direta', 'direta (empilhadeira do stage ao endereço) | faseada (etapa 1 sem elevação até a rua; etapa 2 elevação)'],
     ['armazenagem_etapa1_equipamentos', sc.storage.step1With.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Faseada: equipamentos da etapa 1, separados por ; (o disponível é acionado)'],
+    ['processos_personalizados', sc.useCustomProcesses ? 'S' : 'N', 'S = o primeiro processo da aba Processos conduz cada palete do recebimento (blocos de ações genéricas)'],
     ['limite_espera_doca_min', sc.dockWaitThresholdMin, 'Espera na doca acima da qual o caminhão conta como gargalo (min)'],
     ['amr_trabalha_intervalos', sc.calendar.amrWorksDuringBreaks ? 'S' : 'N', 'S = AMR continuam trabalhando nos intervalos das pessoas'],
     ...(['entrada', 'saida'] as const).flatMap((dir): [string, any, string][] => {
@@ -583,6 +618,21 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   }
   rows.forEach((r) => p.addRow(r));
   styleHeader(p);
+
+  const pr = wb.addWorksheet('Processos');
+  pr.columns = ['Processo_Id', 'Nome_Processo', 'Bloco_Id', 'Tipo', 'X', 'Y', 'Rotulo', 'Saidas', 'Parametros'].map((h) => ({ header: h, width: h === 'Parametros' || h === 'Saidas' ? 60 : 18 }));
+  for (const p of sc.processes ?? [])
+    for (const s of p.steps) {
+      const outs: Record<string, string> = {};
+      for (const q of portsOf(s)) {
+        const t = (s as unknown as Record<string, string | undefined>)[q.key];
+        if (t) outs[q.key] = t;
+      }
+      const { id: _i, type: _t, x: _x, y: _y, label: _l, next: _n, nextBad: _b, nextNo: _o, extracted: _e, nextNone: _z, ...rest } = s as unknown as Record<string, unknown>;
+      void [_i, _t, _x, _y, _l, _n, _b, _o, _e, _z];
+      pr.addRow([p.id, p.name, s.id, s.type, Math.round(s.x), Math.round(s.y), s.label ?? null, JSON.stringify(outs), JSON.stringify(rest)]);
+    }
+  styleHeader(pr);
 
   const v = wb.addWorksheet('Veiculos');
   v.columns = ['Nome', 'Participacao', 'Distribuicao', 'P1', 'P2', 'P3', 'Paletes_media', 'Paletes_desvio', 'Paletes_max', 'Comprimento_bau_m'].map((h) => ({ header: h, width: 16 }));

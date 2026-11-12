@@ -365,6 +365,7 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
     rows, storage,
     travel: { dockToRackIn: dIn, rackToDockOut: dOut, rackToInduction: dInd },
     assumptions: [
+      ...(sc.useCustomProcesses ? ['⚠ Processo personalizado ativo: esta análise analítica continua modelando o FLUXO PADRÃO de recebimento/armazenagem (não lê os blocos do processo). Use a simulação Monte Carlo para avaliar o processo personalizado.'] : []),
       'Chegadas de caminhões e pedidos: processo de Poisson não homogêneo (taxa por hora).',
       'Paletes por caminhão: normal truncada → chegadas de paletes em lote (Poisson composto); dispersão IDC = E[B²]/E[B].',
       'Espera em fila: aproximação de Allen–Cunneen para G/G/c com cauda exponencial (P(Wq>t)).',

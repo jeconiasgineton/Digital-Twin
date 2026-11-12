@@ -6,7 +6,8 @@ Você descreve a operação (planilha Excel e/ou editor na tela, ou importa a pl
 1. **simula a operação em 3D** – empilhadeiras, paleteiras, transpaleteiras, AMR, operários, esteiras, docas, caminhões, racks e paletes, com rotas calculadas em torno de obstáculos;
 2. **mede produtividade e capacidade** com estatística (Monte Carlo, IC 95%, percentis) e **teoria das filas**;
 3. **dimensiona recursos e espaços** (empilhadeiras, conferentes, movimentadores, vagas de carga, docas, posições de palete, stage, ruas, triagem);
-4. **aponta gargalos** (stage cheio, rua cheia, triagem lotada, fila de carga do AMR, docas) e o que fazer.
+4. **monta processos com ações genéricas** (movimentar, elevar, recuperar, conferir, separar…) num editor visual de blocos e setas;
+5. **aponta gargalos** (stage cheio, rua cheia, triagem lotada, fila de carga do AMR, docas) e o que fazer.
 
 ## Como usar
 
@@ -54,12 +55,33 @@ Capacidade de stage, transitório e triagem (paletes) e vagas de carga são edit
 
 Docas encaixam na parede mais próxima abrindo para fora; ruas recebem códigos A, B, C… do norte para o sul. Depois de aplicar, a importação **não** se desfaz com Ctrl+Z (salve o layout em JSON antes se precisar). *Imagem de fundo* continua existindo para decalque manual.
 
+## Processos personalizados (ações genéricas)
+
+Em vez de ações "de recebimento" ou "de triagem", o app tem **ações genéricas** que o usuário combina. Na aba **Processos**, *Editar* abre o **editor de blocos e setas** (arraste blocos; arraste da bolinha de saída até outro bloco para ligar; `Delete` remove bloco ou seta; roda do mouse dá zoom).
+
+| Ação | O que faz | Exemplos de uso |
+|---|---|---|
+| **Movimentar** | Leva o item (palete, caixa ou fardo) de um local a outro com os recursos escolhidos (o disponível é acionado) | descarga (veículo → stage), levar à triagem, etapa 1 da faseada |
+| **Elevar** | Leva o palete à posição do endereço e o eleva (ou retira) | guardar no nível do rack |
+| **Recuperar** | Retira caixas/fardos do item atual (todas, N ou fração) e cria um novo item | pegar caixas de um palete |
+| **Paletizar / Despaletizar** | Converte entre palete e caixas/fardos (tempo por item) | montar/desmontar paletes |
+| **Separar** | Divide o palete: o bom segue, o avariado vai para um segundo palete | triagem |
+| **Conferir** | Tempo de conferência e chance de avaria (que aumenta o tempo) | conferência |
+| **Decidir** | Escolhe o caminho (avariado, todo avariado, sorteio, quantidade) | desvios |
+| **Endereçar** | Define rua + estante + nível pela regra de armazenagem | destino da guarda |
+| **Aguardar** | Espera um tempo | |
+
+Locais: dentro do veículo, doca, stage, rua (endereço transitório), triagem, endereço no rack, qualquer área do layout ou "onde está agora". Stage, rua e triagem têm capacidade: o item reserva espaço antes de pegar recurso e espera se estiver cheio. Há **modelos prontos** (recebimento direto; com conferência e triagem; faseado) já preenchidos com a configuração atual, e a aba **Processos** da planilha guarda os blocos.
+
+Com *Usar o processo personalizado* ativo, o primeiro processo da lista conduz cada palete que sai do veículo de recebimento, no lugar do fluxo padrão. Separação e expedição continuam como estão (ainda não são processos editáveis), e a análise analítica continua modelando o fluxo padrão (aviso na aba Dimensionar).
+
 ## Planilha Excel
 
 | Aba | Conteúdo |
 |---|---|
 | `Parametros` | turno, dias, aquecimento, réplicas, semente, metas (utilização, espera P95, nível de serviço), paletes por caminhão, linhas/caixas por pedido, elevação, ocupação inicial, endereçamento (`abc`/`proximo`/`aleatorio`), fator de demanda; **chegadas** (`chegada_entrada_modo` = `aleatorio`/`intervalo`/`agendado`, intervalo, horários, `atraso_*`); `limite_espera_doca_min`; **recebimento** (`dano_paletes_pct`, `dano_fracao_min/moda/max`, `dano_fator_conferencia`, `triagem_esvaziar_h`, `bau_profundidade`, `descarga_equipamentos`); **armazenagem** (`armazenagem_modo` = `direta`/`faseada`, `armazenagem_etapa1_equipamentos`); `amr_trabalha_intervalos`. |
 | `Recursos` | `empilhadeira`, `paleteira_manual`, `transpaleteira`, `amr`, `operario`, `conferente`: quantidade, velocidades, disponibilidade, custo/h, capacidade (paletes e kg), eleva, operador; AMR: `Autonomia_min`, `Gatilho_carga`, `Carga_min`, `Setup_min`, carga no início/fim do turno e `Carga_horarios`. |
+| `Processos` | processos personalizados: uma linha por bloco (`Saidas` e `Parametros` em JSON; edite de preferência no editor visual); `processos_personalizados` em `Parametros` liga o uso |
 | `Veiculos` | tipos de veículo: participação, manobra/docagem (distribuição em s), paletes por veículo, comprimento do baú. Vazio = tipo único. |
 | `Intervalos` | pausas: início, duração, grupos (`todos` ou `empilhadeira;operario;conferente;paleteira`) e escalonamento (`todos` / `metade` / `percentual`). |
 | `Demanda` | 24 linhas (hora 0–23): caminhões de entrada/h, de saída/h, pedidos/h |
@@ -93,7 +115,7 @@ Números aceitam `1,5`, `85%`, `0,85`, `85`; horários aceitam `6,5`, `06:30`, `
 src/
   model/    tipos, cenário padrão, gerador de galpão, equipamentos, tráfego/calendário, recebimento, áreas
   math/     RNG/distribuições, estatística, filas, navegação (A*/Dijkstra)
-  sim/      motor DES, mundo espacial, processos logísticos, Monte Carlo, worker
+  sim/      motor DES, mundo espacial, processos logísticos, intérprete dos processos personalizados (workflow), Monte Carlo, worker
   analysis/ capacidade/dimensionamento analítico, diagnóstico
   io/       Excel (exceljs), importação de planta (DXF, PDF, imagem)
   view/     cena Three.js, entidades 3D, reprodução ao vivo
@@ -105,6 +127,7 @@ scripts/    modelos de planilha, benchmarks
 ## Limitações conhecidas
 
 - Colisões/bloqueio entre veículos em corredores estreitos não são modelados (apenas distância e velocidade); a largura da rua não limita o tráfego. Use o mapa de calor.
+- Processos personalizados: só o gatilho "palete que sai do veículo de recebimento" (recebimento e armazenagem); o editor não tem desfazer; os tipos de veículo e os locais são os do layout.
 - A conferência (e, portanto, a detecção e a triagem de avarias) só ocorre com conferentes (quantidade > 0).
 - AMR: a bateria desgasta com o tempo de trabalho (não distingue vazio/carregado); no 3D, AMR, paleteiras e transpaleteiras aparecem com o desenho de operário, e os tipos de veículo com o mesmo desenho de caminhão.
 - Armazenagem faseada: a análise analítica trata os transitórios em conjunto (sem desequilíbrio entre ruas); a regra ABC escolhe o rack e sorteia a posição dentro dele.

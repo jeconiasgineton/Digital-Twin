@@ -14,6 +14,7 @@ import { renderLayoutPanel } from './ui/panelLayout';
 import { renderResultsPanel } from './ui/panelResults';
 import { renderSimPanel } from './ui/panelSim';
 import { renderSizingPanel } from './ui/panelSizing';
+import { renderProcessPanel } from './ui/panelProcess';
 import { Playback } from './view/playback';
 import { SceneView } from './view/scene';
 
@@ -124,7 +125,7 @@ function rafRender() {
 }
 
 /* ------------------------------ painéis ------------------------------ */
-const TABS: [string, string][] = [['layout', 'Layout'], ['data', 'Dados'], ['sim', 'Simulação'], ['results', 'Resultados'], ['sizing', 'Dimensionar']];
+const TABS: [string, string][] = [['layout', 'Layout'], ['data', 'Dados'], ['process', 'Processos'], ['sim', 'Simulação'], ['results', 'Resultados'], ['sizing', 'Dimensionar']];
 
 function renderTabs() {
   const t = $('tabs');
@@ -146,6 +147,7 @@ function renderPanel() {
   switch (currentTab) {
     case 'layout': p.append(renderLayoutPanel(ctx)); break;
     case 'data': p.append(renderDataPanel(ctx)); break;
+    case 'process': p.append(renderProcessPanel(ctx)); break;
     case 'sim': simPanel = renderSimPanel(ctx); p.append(simPanel.el); simPanel.update(); break;
     case 'results': p.append(renderResultsPanel(ctx)); break;
     case 'sizing': p.append(renderSizingPanel(ctx)); break;

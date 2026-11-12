@@ -1,6 +1,7 @@
 import type { EquipmentKind, Layout, LayoutElement, Scenario } from '../model/types';
 import { arrivalProfile } from '../model/traffic';
 import { validateEquipment } from '../model/equipment';
+import { STEP_LABEL, validateProcess } from '../model/process';
 import { aisleCodeOf, aisleOf, areaCapacity } from '../model/areas';
 import {
   type DistField, type NavGrid, type Pt, astar, buildNavGrid, cellCenter, cellOf, dijkstraField, dist, fieldPath,
@@ -237,6 +238,22 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     else if (!codes.includes(a) && aisles.length) out.push({ level: 'aviso', msg: `O endereço transitório "${t.name}" aponta para a rua "${a}", que não existe.` });
   }
   out.push(...validateEquipment(sc, c('charger')));
+  if (sc.useCustomProcesses) {
+    const def = sc.processes.find((p) => p.trigger === 'unloadPallet');
+    if (!def) out.push({ level: 'erro', msg: 'Processos personalizados ativados, mas não há nenhum processo de recebimento definido.' });
+    else {
+      for (const i of validateProcess(def)) out.push({ level: i.level, msg: `Processo "${def.name}": ${i.msg}` });
+      const need = new Set<string>();
+      for (const s of def.steps) if ('with' in s) for (const r of s.with) need.add(r);
+      const units = (k: string) => (k === 'worker' ? sc.workers.count : k === 'checker' ? sc.checkers.count : k === 'forklift' ? sc.forklifts.count : sc.equipment.find((e) => e.kind === k)?.count ?? 0);
+      const anyUnits = (kinds: string[]) => kinds.some((k) => units(k) > 0);
+      for (const s of def.steps) {
+        if (!('with' in s) || s.with.length === 0 || anyUnits(s.with)) continue;
+        out.push({ level: 'aviso', msg: `Processo "${def.name}": nenhum recurso de "${s.label || STEP_LABEL[s.type]}" tem quantidade > 0; a empilhadeira fará o trabalho.` });
+      }
+      if (sc.storage.mode === 'phased') out.push({ level: 'aviso', msg: 'Com processos personalizados, a armazenagem faseada é definida pelos blocos do processo (movimentar até a rua + elevar); o modo global não tem efeito.' });
+    }
+  }
   if (sc.storage.mode === 'phased') {
     const movers = sc.storage.step1With.filter((k) => k !== 'forklift').some((k) => (sc.equipment.find((e) => e.kind === k)?.count ?? 0) > 0);
     if (!movers) out.push({ level: 'aviso', msg: 'Armazenagem faseada sem equipamento de etapa 1 (paleteira/transpaleteira/AMR com quantidade > 0): a empilhadeira fará as duas etapas.' });

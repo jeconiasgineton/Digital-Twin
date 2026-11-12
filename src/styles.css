@@ -109,3 +109,26 @@ td.ok, .pill.ok { color: var(--ok); } td.warn, .pill.warn { color: var(--warn); 
 .modal .prev { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; width: 100%; aspect-ratio: 4 / 3; }
 .modal select, .modal input[type=number] { background: var(--bg3); color: var(--tx); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; font-size: 12px; }
 .modal td .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+
+/* editor de processos (blocos e setas) */
+.pe-back { padding: 10px; }
+.pe { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; width: 100%; height: 100%; display: flex; flex-direction: column; box-shadow: 0 20px 60px #000a; min-height: 0; }
+.pe header { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 14px; }
+.pe header h2 { margin: 0; font-size: 15px; white-space: nowrap; }
+.pe header label.f { flex: 1; max-width: 420px; grid-template-columns: auto 1fr; }
+.pe header .row { margin-left: auto; display: flex; gap: 6px; }
+.pe-main { flex: 1; display: grid; grid-template-columns: 170px 1fr 340px; min-height: 0; }
+.pe-palette { border-right: 1px solid var(--line); padding: 10px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.pe-act { justify-content: flex-start; width: 100%; }
+.pe-act .dot, .pe-palette .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.pe-center { display: grid; grid-template-rows: 1fr auto; min-width: 0; min-height: 0; }
+.pe-canvas { width: 100%; height: 100%; background: radial-gradient(#25314a 1px, transparent 1px) 0 0 / 22px 22px, var(--bg); touch-action: none; user-select: none; display: block; }
+.pe-issues { border-top: 1px solid var(--line); padding: 8px 12px; max-height: 130px; overflow-y: auto; font-size: 12px; display: grid; gap: 3px; }
+.pe-iss { cursor: pointer; color: var(--mut); }
+.pe-iss.erro { color: var(--bad); }
+.pe-ins { border-left: 1px solid var(--line); padding: 12px; overflow-y: auto; display: grid; gap: 10px; align-content: start; }
+.ins { display: grid; gap: 9px; }
+.ins-row { display: grid; gap: 4px; }
+.ins-row select, .ins-row input[type=number], .ins select, .ins input[type=text] { background: var(--bg3); color: var(--tx); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; font-size: 12px; }
+.ins .row, .ins-row .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+@media (max-width: 900px) { .pe-main { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; } }

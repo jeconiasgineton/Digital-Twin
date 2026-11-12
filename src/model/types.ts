@@ -1,3 +1,5 @@
+import type { ProcessDef } from './process';
+
 /**
  * Modelo de domínio do Digital Twin logístico.
  * Unidades: metros (m), segundos (s), graus (°). Eixos: X (leste), Z (sul), Y (altura).
@@ -268,6 +270,10 @@ export interface Scenario {
   calendar: WorkCalendar;
   receiving: ReceivingSpec;
   storage: StorageSpec;
+  /** processos personalizados (blocos de ações genéricas) */
+  processes: ProcessDef[];
+  /** true: o processo personalizado de recebimento conduz cada palete que sai do veículo, no lugar do fluxo padrão */
+  useCustomProcesses: boolean;
 }
 
 /* ---------- resultados ---------- */

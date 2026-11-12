@@ -74,5 +74,7 @@ export function defaultScenario(): Scenario {
     calendar: defaultCalendar(),
     receiving: defaultReceiving(),
     storage: { mode: 'direct', step1With: ['palletTruck', 'palletJack', 'amr'] },
+    processes: [],
+    useCustomProcesses: false,
   };
 }

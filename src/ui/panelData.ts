@@ -42,8 +42,8 @@ export async function downloadTemplate(ctx: AppCtx) {
   download('digital-twin-dimensionamento.xlsx', buf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
 }
 
-const DIST_KINDS: [DistKind, string][] = [['constant', 'Constante'], ['triangular', 'Triangular'], ['normal', 'Normal'], ['lognormal', 'Lognormal'], ['exponential', 'Exponencial'], ['uniform', 'Uniforme']];
-const DIST_LABELS: Record<DistKind, [string, string, string]> = {
+export const DIST_KINDS: [DistKind, string][] = [['constant', 'Constante'], ['triangular', 'Triangular'], ['normal', 'Normal'], ['lognormal', 'Lognormal'], ['exponential', 'Exponencial'], ['uniform', 'Uniforme']];
+export const DIST_LABELS: Record<DistKind, [string, string, string]> = {
   constant: ['valor', '', ''], triangular: ['mín', 'moda', 'máx'], normal: ['média', 'desvio', ''], lognormal: ['média', 'desvio', ''], exponential: ['média', '', ''], uniform: ['mín', 'máx', ''],
 };
 
