@@ -138,6 +138,14 @@ export class Pool<T extends PoolItem> {
   /** paradas que chegaram com o item já parado ou com parada pendente: executadas em sequência */
   private deferred = new Map<T, { repair: number; sig: Signal }[]>();
   onWait?: (w: number) => void;
+  /** itens retirados de serviço (ex.: AMR carregando) até resume() */
+  private held = new Set<T>();
+  private pendingHold = new Map<T, Signal>();
+  /**
+   * Chamado ao liberar um item, com a duração da tarefa. Se devolver true, o item fica retido
+   * (fora de serviço) até que quem o reteve chame resume().
+   */
+  onRelease?: (item: T, taskDuration: number) => boolean;
 
   constructor(private sim: Sim, items: T[]) {
     this.items = items;
@@ -197,9 +205,50 @@ export class Pool<T extends PoolItem> {
     this.sim.schedule(0, () => cb(item));
   }
 
+  /**
+   * Retira o item de serviço até resume(): se ocioso, agora; se ocupado, ao concluir a tarefa em curso.
+   * O sinal dispara quando o item de fato parou.
+   */
+  hold(item: T): Signal {
+    const sig = new Signal(this.sim);
+    const idx = this.idle.indexOf(item);
+    if (idx >= 0) {
+      this.idle.splice(idx, 1);
+      this.held.add(item);
+      sig.fire();
+    } else this.pendingHold.set(item, sig);
+    return sig;
+  }
+
+  /** devolve ao serviço um item retido por hold()/onRelease */
+  resume(item: T) {
+    this.held.delete(item);
+    const pf = this.pendingFail.get(item);
+    if (pf) {
+      this.pendingFail.delete(item);
+      this._repair(item, pf.repair, pf.sig);
+      return;
+    }
+    const next = this.deferred.get(item)?.shift();
+    if (next) this._repair(item, next.repair, next.sig);
+    else this._offer(item);
+  }
+
   release(item: T) {
     this._account(item);
+    const dur = this.sim.now - item.busySince;
     item.busy = false;
+    const ph = this.pendingHold.get(item);
+    if (ph) {
+      this.pendingHold.delete(item);
+      this.held.add(item);
+      ph.fire();
+      return;
+    }
+    if (this.onRelease?.(item, dur)) {
+      this.held.add(item);
+      return;
+    }
     const pf = this.pendingFail.get(item);
     if (pf) {
       this.pendingFail.delete(item);
@@ -231,7 +280,7 @@ export class Pool<T extends PoolItem> {
    */
   fail(item: T, repair: number): Signal {
     const sig = new Signal(this.sim);
-    if (this.repairing.has(item) || this.pendingFail.has(item)) {
+    if (this.repairing.has(item) || this.pendingFail.has(item) || this.held.has(item)) {
       const q = this.deferred.get(item) ?? [];
       q.push({ repair, sig });
       this.deferred.set(item, q);

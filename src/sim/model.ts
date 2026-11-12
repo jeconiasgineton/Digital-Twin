@@ -1,5 +1,6 @@
 import type { ArrivalSpec, EquipmentKind, FleetSpec, Layout, ReplicationResult, RunKpis, Scenario, HourSeries, VehicleType, PeopleRole } from '../model/types';
 import { trailerDepthM } from '../model/receiving';
+import { amrChargeHours } from '../model/equipment';
 import { PEOPLE_ROLES, breakMinutesPerDay, effectiveVehicles, offsetInShift, waveOf } from '../model/traffic';
 import { Rng, sampleDist } from '../math/rng';
 import { mean, percentile } from '../math/stats';
@@ -85,6 +86,11 @@ export class SimModel {
   private readonly transitWait: number[] = [];
   private phased = 0;
   private stored = 0;
+  /** AMR: bateria (s de trabalho desde a última carga completa) e ciclo de carga em andamento */
+  private amrState = new Map<number, { batt: number; cycling: boolean }>();
+  private chargerSlots: Pool<PoolItem> | null = null;
+  private amrCharges = 0;
+  private amrChargeSec = 0;
   private rngDmg: Rng;
   private skuCartons: number[] = [];
   /** estatísticas por tipo de veículo (índice = posição em effectiveVehicles) */
@@ -156,6 +162,7 @@ export class SimModel {
       if (e.count > 0) this.eqPools[e.kind] = mk('mover', e.count, e, 3000 + 100 * k, e.kind);
     });
     for (const p of [this.forklifts, this.workers, this.checkers, this.eqPools.palletJack, this.eqPools.palletTruck, this.eqPools.amr]) p.statsFrom = this.warm;
+    this.setupAmr();
     for (const [aisle, areas] of w.transitsByAisle) {
       const slots: (PoolItem & { area: AreaRT })[] = [];
       for (const a of areas) for (let i = 0; i < a.capacity; i++) slots.push({ id: slots.length, x: a.pt.x, z: a.pt.z, busy: false, busyTime: 0, busySince: 0, downTime: 0, area: a });
@@ -518,6 +525,75 @@ export class SimModel {
     }
     mv.tasks++;
     pool.release(mv);
+  }
+
+  /**
+   * AMR: a bateria desgasta com o tempo de trabalho. Ao consumir a fração configurada da autonomia (padrão 1/2),
+   * o AMR termina a tarefa em curso, vai à estação de carga, carrega e faz o setup. Também carrega nos horários
+   * do calendário (início/fim de turno e horários específicos).
+   */
+  private setupAmr() {
+    const sc = this.sc;
+    const spec = sc.equipment.find((e) => e.kind === 'amr');
+    const pool = this.eqPools.amr;
+    if (!spec?.amr || !pool.items.length) return;
+    const a = spec.amr;
+    if (this.world.chargers.length) {
+      const slots: PoolItem[] = [];
+      for (const ch of this.world.chargers) for (let i = 0; i < ch.capacity; i++) slots.push({ id: slots.length, x: ch.pt.x, z: ch.pt.z, busy: false, busyTime: 0, busySince: 0, downTime: 0 });
+      this.chargerSlots = new Pool(this.sim, slots);
+      this.chargerSlots.statsFrom = this.warm;
+    }
+    for (const it of pool.items) this.amrState.set(it.id, { batt: 0, cycling: false });
+    const limit = a.chargeTriggerFraction * a.autonomyMin * 60;
+    pool.onRelease = (it, dur) => {
+      const st = this.amrState.get(it.id)!;
+      st.batt += dur;
+      if (st.batt >= limit && !st.cycling) {
+        this.sim.spawn(this.chargeCycle(it, true));
+        return true; // retido: só volta ao serviço depois de carregar
+      }
+      return false;
+    };
+    // calendário de carga: horários do dia (início/fim de turno e específicos), todos os dias
+    const self = this;
+    for (const h of amrChargeHours(sc, a)) {
+      const off = (((h - sc.startHour) % 24) + 24) % 24 * 3600;
+      if (off > sc.shiftHours * 3600) continue;
+      for (const it of pool.items)
+        this.sim.spawn(function* () {
+          for (let d = 0; d < sc.days; d++) {
+            yield Math.max(0, d * sc.shiftHours * 3600 + off - self.sim.now);
+            const st = self.amrState.get(it.id)!;
+            if (!st.cycling && st.batt > 0) self.sim.spawn(self.chargeCycle(it, false)); // já carregado: nada a fazer
+          }
+        });
+    }
+  }
+
+  private *chargeCycle(it: Agent, held: boolean): Process {
+    const a = this.sc.equipment.find((e) => e.kind === 'amr')!.amr!;
+    const st = this.amrState.get(it.id)!;
+    st.cycling = true;
+    const pool = this.eqPools.amr;
+    if (!held) yield pool.hold(it); // termina a tarefa em curso e só então para
+    const t0 = this.sim.now;
+    if (this.chargerSlots) {
+      const slot: PoolItem = yield this.chargerSlots.request(it); // fila se todas as vagas estiverem ocupadas
+      yield this.go(it, { x: slot.x, z: slot.z }, false);
+      yield a.chargeMin * 60;
+      yield a.setupMin * 60;
+      this.chargerSlots.release(slot);
+    } else {
+      yield (a.chargeMin + a.setupMin) * 60; // sem estação no layout: carrega onde está
+    }
+    st.batt = 0;
+    st.cycling = false;
+    if (t0 >= this.warm) {
+      this.amrCharges++;
+      this.amrChargeSec += this.sim.now - t0;
+    }
+    pool.resume(it);
   }
 
   /** @internal só para testes: ocupação dos pools de endereços transitórios */
@@ -981,6 +1057,10 @@ export class SimModel {
       phasedShare: this.stored ? this.phased / this.stored : 0,
       transitWaitMean: mean(this.transitWait),
       transitOccupancyMax: this.transitMax,
+      utilAmr: this.eqPools.amr.items.length ? this.eqPools.amr.utilization(end) : 0,
+      amrChargesPerDay: this.amrCharges / days,
+      amrChargeShare: this.eqPools.amr.items.length ? this.amrChargeSec / (this.eqPools.amr.items.length * Math.max(1e-9, end - this.warm)) : 0,
+      chargerWaitMean: this.chargerSlots ? mean(this.chargerSlots.waits) / 60 : 0,
     };
     kpis.backlogOrders = this.workers.queueLength; // pedidos ainda aguardando operário ao final
     return {

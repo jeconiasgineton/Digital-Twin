@@ -351,6 +351,11 @@ export interface RunKpis {
   phasedShare: number; // fração dos paletes guardados em duas etapas
   transitWaitMean: number; // espera da etapa 1 por espaço no endereço transitório da rua (min)
   transitOccupancyMax: number; // paletes simultâneos nos endereços transitórios
+  // AMR
+  utilAmr: number; // utilização dos AMR (trabalho; carga não conta)
+  amrChargesPerDay: number; // cargas por dia (todos os AMR)
+  amrChargeShare: number; // fração do tempo dos AMR em ida à estação, carga e setup
+  chargerWaitMean: number; // espera por vaga na estação de carga (min)
 }
 
 export interface VehicleStat {
