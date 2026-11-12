@@ -301,6 +301,22 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
         h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('truck')); ch(); ctx.rerender(); } }, '+ Truck'),
         h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('vuc')); ch(); ctx.rerender(); } }, '+ VUC')),
     ], false),
+    section('Armazenagem', [
+      selField('Modo de armazenagem (vale para toda a operação)', () => sc.storage.mode, (v) => ((sc.storage.mode = v), ch(), ctx.rerender()), [
+        ['direct', 'Direta: empilhadeira busca no stage e leva ao endereço'],
+        ['phased', 'Faseada: etapa 1 sem elevação até a rua; etapa 2 elevação'],
+      ]),
+      sc.storage.mode === 'phased'
+        ? h('div', { style: { display: 'grid', gap: '7px' } },
+            h('b', null, 'Equipamentos da etapa 1 (sem elevação)'),
+            h('div', { class: 'row' }, (['palletJack', 'palletTruck', 'amr'] as const).map((k) =>
+              h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.storage.step1With.includes(k), onchange: (ev: Event) => {
+                sc.storage.step1With = (ev.target as HTMLInputElement).checked ? [...new Set([...sc.storage.step1With, k])] : sc.storage.step1With.filter((x) => x !== k);
+                ch(); ctx.rerender();
+              } }), EQUIPMENT_NAMES[k]))),
+            h('p', { class: 'note' }, 'O endereço de destino (rua + estante + nível) é definido após a conferência. O equipamento da etapa 1 leva o palete a um endereço transitório da rua do destino; se a rua estiver cheia, espera liberar espaço. Na etapa 2 a empilhadeira recebe o destino final, pega o palete na rua e faz a elevação. Sem equipamento de etapa 1 disponível, a empilhadeira faz as duas etapas.'))
+        : h('p', { class: 'note' }, 'A empilhadeira busca o palete no stage e o leva ao endereço definido pelas regras de armazenagem e pela curva ABC, já com a elevação.'),
+    ], false),
     section('Recebimento: descarga, avarias e triagem', [
       h('b', null, 'Equipamentos que podem descarregar o baú'),
       h('p', { class: 'note' }, 'O equipamento disponível no momento é acionado. Só vale para os que têm quantidade maior que 0 no catálogo.'),

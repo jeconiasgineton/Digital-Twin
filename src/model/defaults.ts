@@ -73,5 +73,6 @@ export function defaultScenario(): Scenario {
     dockWaitThresholdMin: 10,
     calendar: defaultCalendar(),
     receiving: defaultReceiving(),
+    storage: { mode: 'direct', step1With: ['palletTruck', 'palletJack', 'amr'] },
   };
 }

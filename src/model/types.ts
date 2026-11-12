@@ -47,6 +47,9 @@ export interface LayoutElement {
   aisle?: string;
   /** triagem: ordem de uso (1 = primeira; ao lotar, o palete segue para a próxima) */
   priority?: number;
+  /** racks: rua da face frontal (+Z local) e da face de trás (−Z local); vazio = a rua mais próxima daquele lado */
+  aisleFront?: string;
+  aisleBack?: string;
 }
 
 export interface Layout {
@@ -181,6 +184,15 @@ export interface WorkCalendar {
   amrWorksDuringBreaks: boolean;
 }
 
+export type StorageMode = 'direct' | 'phased';
+
+/** armazenagem: direta (empilhadeira leva do stage ao endereço) ou faseada (etapa 1 sem elevação até a rua; etapa 2 elevação) */
+export interface StorageSpec {
+  mode: StorageMode;
+  /** faseada: equipamentos sem elevação que fazem a etapa 1 (o disponível é acionado) */
+  step1With: EquipmentKind[];
+}
+
 /** recebimento: descarga, conferência, avarias e triagem */
 export interface ReceivingSpec {
   /** probabilidade de um palete conferido estar avariado (0–1); só vale com conferentes (a conferência é quem detecta) */
@@ -255,6 +267,7 @@ export interface Scenario {
   dockWaitThresholdMin: number;
   calendar: WorkCalendar;
   receiving: ReceivingSpec;
+  storage: StorageSpec;
 }
 
 /* ---------- resultados ---------- */
@@ -334,6 +347,10 @@ export interface RunKpis {
   stageWaitMean: number; // espera por espaço no stage (min)
   stageOccupancyMax: number; // paletes simultâneos no stage
   utilMover: number; // utilização de paleteiras/transpaleteiras/AMR
+  // armazenagem faseada
+  phasedShare: number; // fração dos paletes guardados em duas etapas
+  transitWaitMean: number; // espera da etapa 1 por espaço no endereço transitório da rua (min)
+  transitOccupancyMax: number; // paletes simultâneos nos endereços transitórios
 }
 
 export interface VehicleStat {

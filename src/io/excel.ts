@@ -255,6 +255,14 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
       if (kinds.length) sc.receiving.unloadWith = kinds;
       else warn('descarga_equipamentos: use empilhadeira, paleteira_manual, transpaleteira e/ou amr.');
     }
+    const modo = norm(g('armazenagem_modo'));
+    if (modo) sc.storage.mode = modo.startsWith('fas') || modo === 'phased' ? 'phased' : 'direct';
+    const s1 = g('armazenagem_etapa1_equipamentos');
+    if (s1 !== undefined && s1 !== null && String(s1).trim() !== '') {
+      const kinds = [...new Set(String(s1).split(/[;|,]/).map((x) => norm(x)).map((t) => (t.startsWith('paletei') ? 'palletJack' : t.startsWith('transpal') ? 'palletTruck' : t.startsWith('amr') ? 'amr' : t.startsWith('empilh') ? 'forklift' : null)).filter((x): x is EquipmentKind => !!x))];
+      if (kinds.length) sc.storage.step1With = kinds;
+      else warn('armazenagem_etapa1_equipamentos: use paleteira_manual, transpaleteira e/ou amr.');
+    }
     setN('limite_espera_doca_min', (v) => (sc.dockWaitThresholdMin = v), [0, 600]);
     const amrBreaks = norm(g('amr_trabalha_intervalos'));
     if (amrBreaks) sc.calendar.amrWorksDuringBreaks = ['s', 'sim', '1', 'true', 'x'].includes(amrBreaks);
@@ -442,6 +450,8 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
         levels: type === 'rack' ? Math.round(num(pick(r, 'niveis'), 4)!) : undefined, rows: type === 'rack' ? Math.round(num(pick(r, 'fileiras'), width > 1.6 ? 2 : 1)!) : undefined,
         pickFace: type === 'rack' ? ['s', 'sim', '1', 'true', 'x'].includes(picking) : undefined,
         speed: type === 'conveyor' ? num(pick(r, 'velocidade'), 0.6) : undefined,
+        aisleFront: type === 'rack' && pick(r, 'rua_frente') ? String(pick(r, 'rua_frente')).trim().toUpperCase() : undefined,
+        aisleBack: type === 'rack' && pick(r, 'rua_fundo') ? String(pick(r, 'rua_fundo')).trim().toUpperCase() : undefined,
         capacity: ['transit', 'stage', 'triage', 'charger'].includes(type) && num(pick(r, 'capacidade', 'capacity')) !== undefined ? Math.round(num(pick(r, 'capacidade', 'capacity'))!) : undefined,
         aisle: (type === 'aisle' || type === 'transit') && pick(r, 'rua', 'aisle') ? String(pick(r, 'rua', 'aisle')).trim().toUpperCase() : undefined,
         priority: type === 'triage' && num(pick(r, 'prioridade', 'priority')) !== undefined ? Math.round(num(pick(r, 'prioridade', 'priority'))!) : undefined,
@@ -549,6 +559,8 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['triagem_esvaziar_h', sc.receiving.triageClearEveryHours, 'As áreas de triagem são esvaziadas a cada N horas (0 = nunca)'],
     ['bau_profundidade', sc.receiving.trailerDepth ? 'S' : 'N', 'S = a distância dentro do baú depende do comprimento do veículo'],
     ['descarga_equipamentos', sc.receiving.unloadWith.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Equipamentos que podem descarregar o baú (o disponível é acionado), separados por ;'],
+    ['armazenagem_modo', sc.storage.mode === 'phased' ? 'faseada' : 'direta', 'direta (empilhadeira do stage ao endereço) | faseada (etapa 1 sem elevação até a rua; etapa 2 elevação)'],
+    ['armazenagem_etapa1_equipamentos', sc.storage.step1With.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Faseada: equipamentos da etapa 1, separados por ; (o disponível é acionado)'],
     ['limite_espera_doca_min', sc.dockWaitThresholdMin, 'Espera na doca acima da qual o caminhão conta como gargalo (min)'],
     ['amr_trabalha_intervalos', sc.calendar.amrWorksDuringBreaks ? 'S' : 'N', 'S = AMR continuam trabalhando nos intervalos das pessoas'],
     ...(['entrada', 'saida'] as const).flatMap((dir): [string, any, string][] => {
@@ -620,10 +632,10 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   styleHeader(s);
 
   const l = wb.addWorksheet('Layout');
-  l.columns = ['Tipo', 'Nome', 'X', 'Z', 'Rot', 'Comprimento', 'Largura', 'Vaos', 'Niveis', 'Fileiras', 'Picking', 'Velocidade', 'Capacidade', 'Rua', 'Prioridade'].map((h) => ({ header: h, width: h === 'Nome' ? 30 : 13 }));
+  l.columns = ['Tipo', 'Nome', 'X', 'Z', 'Rot', 'Comprimento', 'Largura', 'Vaos', 'Niveis', 'Fileiras', 'Picking', 'Velocidade', 'Capacidade', 'Rua', 'Prioridade', 'Rua_frente', 'Rua_fundo'].map((h) => ({ header: h, width: h === 'Nome' ? 30 : 13 }));
   const tname: Record<string, string> = { rack: 'rack', dockIn: 'doca_entrada', dockOut: 'doca_saida', conveyor: 'esteira', wall: 'parede', zone: 'zona', station: 'estacao', parking: 'estacionamento', aisle: 'rua', transit: 'endereco_transitorio', stage: 'stage', triage: 'triagem', charger: 'carga_amr' };
   for (const e of layout?.elements ?? [])
-    l.addRow([tname[e.type], e.name, +e.x.toFixed(2), +e.z.toFixed(2), +e.rot.toFixed(1), +e.length.toFixed(2), +e.width.toFixed(2), e.bays ?? null, e.levels ?? null, e.rows ?? null, e.pickFace ? 'S' : null, e.speed ?? null, e.capacity ?? null, e.aisle ?? null, e.priority ?? null]);
+    l.addRow([tname[e.type], e.name, +e.x.toFixed(2), +e.z.toFixed(2), +e.rot.toFixed(1), +e.length.toFixed(2), +e.width.toFixed(2), e.bays ?? null, e.levels ?? null, e.rows ?? null, e.pickFace ? 'S' : null, e.speed ?? null, e.capacity ?? null, e.aisle ?? null, e.priority ?? null, e.aisleFront ?? null, e.aisleBack ?? null]);
   styleHeader(l);
   return wb;
 }

@@ -5,7 +5,7 @@ import { Rng, sampleDist } from '../math/rng';
 import { mean, percentile } from '../math/stats';
 import type { Pt } from '../math/spatial';
 import { Pool, type PoolItem, Countdown, Sim, type Process } from './engine';
-import { type Agent, type AreaRT, type ConveyorRT, type DockItem, type RackRT, SLOT_FREE, SLOT_OCCUPIED, SLOT_RESERVED, type World, buildWorld, findSlot, slotAddr } from './world';
+import { type Agent, type AreaRT, type ConveyorRT, type DockItem, type RackRT, SLOT_FREE, SLOT_OCCUPIED, SLOT_RESERVED, type World, buildWorld, findSlot, slotAddr, slotSide } from './world';
 export type { World };
 
 /** Interface opcional para animação 3D. */
@@ -78,6 +78,13 @@ export class SimModel {
   private stageMax = 0;
   private readonly stageWait: number[] = [];
   private readonly checkCycle: number[] = [];
+  /** espaço dos endereços transitórios por rua (uma posição por palete de capacidade) */
+  private transitPools = new Map<string, Pool<PoolItem & { area: AreaRT }>>();
+  private transitInUse = 0;
+  private transitMax = 0;
+  private readonly transitWait: number[] = [];
+  private phased = 0;
+  private stored = 0;
   private rngDmg: Rng;
   private skuCartons: number[] = [];
   /** estatísticas por tipo de veículo (índice = posição em effectiveVehicles) */
@@ -149,6 +156,13 @@ export class SimModel {
       if (e.count > 0) this.eqPools[e.kind] = mk('mover', e.count, e, 3000 + 100 * k, e.kind);
     });
     for (const p of [this.forklifts, this.workers, this.checkers, this.eqPools.palletJack, this.eqPools.palletTruck, this.eqPools.amr]) p.statsFrom = this.warm;
+    for (const [aisle, areas] of w.transitsByAisle) {
+      const slots: (PoolItem & { area: AreaRT })[] = [];
+      for (const a of areas) for (let i = 0; i < a.capacity; i++) slots.push({ id: slots.length, x: a.pt.x, z: a.pt.z, busy: false, busyTime: 0, busySince: 0, downTime: 0, area: a });
+      const p = new Pool(sim, slots);
+      p.statsFrom = this.warm;
+      this.transitPools.set(aisle, p);
+    }
     if (w.stages.length) {
       const slots: PoolItem[] = [];
       for (const st of w.stages) for (let i = 0; i < st.capacity; i++) slots.push({ id: slots.length, x: st.pt.x, z: st.pt.z, busy: false, busyTime: 0, busySince: 0, downTime: 0 });
@@ -306,8 +320,8 @@ export class SimModel {
     return (2 * h) / Math.max(0.05, this.sc.liftSpeed) + sampleDist(this.rngSvc, this.sc.ops.putawayPosition);
   }
 
-  private accessPoint(r: RackRT, bay = this.rngRoute.int(r.bays)): Pt {
-    return r.access[bay][this.rngRoute.int(2)];
+  private accessPoint(r: RackRT, bay = this.rngRoute.int(r.bays), side: 0 | 1 = this.rngRoute.int(2) as 0 | 1): Pt {
+    return r.access[bay][side];
   }
 
   private busyTotal(pool: Pool<any>): number {
@@ -506,6 +520,11 @@ export class SimModel {
     pool.release(mv);
   }
 
+  /** @internal só para testes: ocupação dos pools de endereços transitórios */
+  transitPoolsForTest(): { size: number; busyCount: number }[] {
+    return [...this.transitPools.values()].map((p) => ({ size: p.items.length, busyCount: p.items.filter((i) => i.busy).length }));
+  }
+
   /** coleta/descarte periódico das áreas de triagem */
   private startTriageClearing() {
     const every = this.sc.receiving.triageClearEveryHours * 3600;
@@ -549,7 +568,7 @@ export class SimModel {
     unloaded.tick();
 
     let from: Pt = dock.inner;
-    let fk!: Agent;
+    let held: Agent | undefined; // empilhadeira que já está com o palete (descarga direta, sem conferência e sem faseada)
     if (staged) {
       // 3) deixa o palete no stage; o conferente confere e (se houver avaria) faz a triagem
       const stage: Pt = stageSlot ? { x: stageSlot.x, z: stageSlot.z } : { x: dock.inner.x, z: dock.inner.z - 2.5 };
@@ -589,31 +608,72 @@ export class SimModel {
         return;
       }
       if (damaged) this.sim.spawn(this.triageTransport(stage, undefined, measured)); // 2º palete só com as avariadas
-      // 4) palete bom: nova tarefa de guarda com empilhadeira
-      fk = yield this.forklifts.request(stage);
-      yield this.go(fk, stage, false);
+    } else if (eqPool === this.forklifts && sc.storage.mode === 'direct') {
+      held = eq; // sem conferência e armazenagem direta: a própria empilhadeira segue para a guarda
+    } else {
+      // equipamento sem elevação (ou armazenagem faseada): deixa o palete na doca
+      eqPool.release(eq);
+    }
+    yield* this.storePallet(from, cls, tDock, measured, held, stageSlot);
+  }
+
+  /** endereça (reserva a posição) e guarda o palete: direta (empilhadeira) ou faseada (etapa 1 até a rua + etapa 2 elevação) */
+  private *storePallet(from: Pt, cls: 0 | 1 | 2, tDock: number, measured: boolean, held: Agent | undefined, stageSlot: PoolItem | undefined): Process {
+    const c = this.c;
+    const releaseStage = () => {
       if (stageSlot && this.stageSlots) {
         this.stageSlots.release(stageSlot);
         this.stageInUse--;
       }
-    } else if (eqPool === this.forklifts) {
-      fk = eq; // sem conferência: a própria empilhadeira segue para a guarda
-    } else {
-      // equipamento sem elevação: deixa o palete na doca e chama uma empilhadeira
-      eqPool.release(eq);
-      fk = yield this.forklifts.request(dock.inner);
-      yield this.go(fk, dock.inner, false);
-    }
+    };
     const rack = this.chooseRackPut(cls, from);
     if (!rack) {
       if (measured) c.overflow++;
       c.palletsDone++;
-      this.forklifts.release(fk);
+      releaseStage();
+      if (held) this.forklifts.release(held);
       return;
     }
-    const slot = this.reserveSlot(rack);
+    const slot = this.reserveSlot(rack); // o destino (endereço completo, com a rua) é definido aqui
     const addr = slotAddr(rack, slot);
-    const ap = this.accessPoint(rack, addr.bay);
+    const side = slotSide(rack, slot);
+    const ap = this.accessPoint(rack, addr.bay, side);
+    let fk: Agent;
+    const aisle = rack.faceAisle[side];
+    const tpool = aisle ? this.transitPools.get(aisle) : undefined;
+    if (this.sc.storage.mode === 'phased' && !held) {
+      // etapa 1: equipamento sem elevação leva o palete até um endereço transitório da rua do destino
+      let tslot: (PoolItem & { area: AreaRT }) | undefined;
+      if (tpool) {
+        const t0 = this.sim.now; // rua cheia: a etapa 1 espera até liberar espaço (reserva antes de pegar equipamento)
+        tslot = yield tpool.request(from);
+        if (measured) this.transitWait.push((this.sim.now - t0) / 60);
+        this.transitInUse++;
+        this.transitMax = Math.max(this.transitMax, this.transitInUse);
+      }
+      const step1 = this.step1Pool();
+      const mv: Agent = yield step1.request(from);
+      yield this.go(mv, from, false);
+      releaseStage();
+      const drop: Pt = tslot ? { x: tslot.x, z: tslot.z } : ap;
+      yield this.go(mv, drop, true);
+      mv.tasks++;
+      step1.release(mv);
+      // etapa 2: a empilhadeira recebe o destino final, pega o palete na rua e faz a elevação
+      fk = yield this.forklifts.request(drop);
+      yield this.go(fk, drop, false);
+      if (tslot && tpool) {
+        tpool.release(tslot);
+        this.transitInUse--;
+      }
+      if (measured) this.phased++;
+    } else if (held) {
+      fk = held;
+    } else {
+      fk = yield this.forklifts.request(from);
+      yield this.go(fk, from, false);
+      releaseStage();
+    }
     yield this.go(fk, ap, true);
     yield this.liftTime(addr.level);
     rack.slots[slot] = SLOT_OCCUPIED;
@@ -625,7 +685,15 @@ export class SimModel {
       c.palletsIn++;
       this.hourBucket().in++;
     }
-    if (measured) this.putawayLead.push((this.sim.now - tDock) / 60);
+    if (measured) {
+      this.stored++;
+      this.putawayLead.push((this.sim.now - tDock) / 60);
+    }
+  }
+
+  /** etapa 1 da armazenagem faseada: equipamento sem elevação disponível (sem nenhum, a empilhadeira) */
+  private step1Pool(): Pool<Agent> {
+    return this.choosePool(this.sc.storage.step1With.filter((k) => k !== 'forklift').map((k) => this.eqPools[k]));
   }
 
   private *outboundTruck(): Process {
@@ -663,9 +731,10 @@ export class SimModel {
       loaded.tick();
       return;
     }
-    const addr = slotAddr(rack, this.takeSlot(rack));
+    const outIdx = this.takeSlot(rack);
+    const addr = slotAddr(rack, outIdx);
     c.palletsRequested++;
-    const ap = this.accessPoint(rack, addr.bay);
+    const ap = this.accessPoint(rack, addr.bay, slotSide(rack, outIdx));
     const fk: Agent = yield this.forklifts.request(ap);
     yield this.go(fk, ap, false);
     yield this.liftTime(addr.level);
@@ -909,6 +978,9 @@ export class SimModel {
       stageWaitMean: mean(this.stageWait),
       stageOccupancyMax: this.stageMax,
       utilMover,
+      phasedShare: this.stored ? this.phased / this.stored : 0,
+      transitWaitMean: mean(this.transitWait),
+      transitOccupancyMax: this.transitMax,
     };
     kpis.backlogOrders = this.workers.queueLength; // pedidos ainda aguardando operário ao final
     return {

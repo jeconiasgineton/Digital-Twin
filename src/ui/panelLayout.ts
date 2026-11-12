@@ -51,6 +51,9 @@ export function propertiesBox(ctx: AppCtx): HTMLElement {
       numField('Níveis', () => el.levels ?? 4, (v) => ((el.levels = Math.max(1, Math.round(v))), ed()), { step: 1, min: 1, max: 12 }),
       selField('Fileiras', () => String(el.rows ?? 2) as '1' | '2', (v) => ((el.rows = Number(v)), ed()), [['1', 'Simples'], ['2', 'Dupla (costas c/ costas)']]),
       h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!el.pickFace, onchange: (e: Event) => ((el.pickFace = (e.target as HTMLInputElement).checked), ed()) }), 'Face de picking (caixas)'),
+      textField('Rua da face frontal (vazio = automática)', () => el.aisleFront ?? '', (v) => ((el.aisleFront = v.trim().toUpperCase() || undefined), ed(), ctxRerender(ctx))),
+      textField('Rua da face de trás (vazio = automática)', () => el.aisleBack ?? '', (v) => ((el.aisleBack = v.trim().toUpperCase() || undefined), ed(), ctxRerender(ctx))),
+      h('p', { class: 'note' }, 'Face frontal = lado +Z do rack (gira com ele). A rua automática é a mais próxima daquele lado; o endereço usa a letra da rua + estante + nível (ex.: A015).'),
       h('p', { class: 'note' }, `Capacidade: ${(el.bays ?? 1) * (el.levels ?? 1) * (el.rows ?? 1)} posições de palete.`),
     );
   }

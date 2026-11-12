@@ -36,7 +36,7 @@ describe('controle por posição', () => {
     const m = new SimModel(defaultScenario(), generateLayout(defaultLayoutParams()), 1);
     const r = m.world.racks[0];
     expect(slotAddr(r, 0)).toEqual({ row: 0, bay: 0, level: 0 });
-    expect(slotLabel(r, 4)).toMatch(/^R01(\.1)?-015$/);
+    expect(slotLabel(r, 4)).toMatch(/^[A-Z]+015$/); // rua + estante 01 + nível 5
     const last = slotAddr(r, r.slots.length - 1);
     expect(last).toEqual({ row: r.rows - 1, bay: r.bays - 1, level: r.levels - 1 });
   });

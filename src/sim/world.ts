@@ -4,7 +4,7 @@ import { validateEquipment } from '../model/equipment';
 import { aisleCodeOf, aisleOf, areaCapacity } from '../model/areas';
 import {
   type DistField, type NavGrid, type Pt, astar, buildNavGrid, cellCenter, cellOf, dijkstraField, dist, fieldPath,
-  linearEnds, nearestFree, pathLength, simplifyPath, toWorld,
+  linearEnds, nearestFree, pathLength, pointInElement, simplifyPath, toLocal, toWorld,
 } from '../math/spatial';
 import type { PoolItem } from './engine';
 
@@ -56,6 +56,16 @@ export interface RackRT {
   rank: number;
   /** pontos de acesso (por vão e lado), pré-computados */
   access: Pt[][];
+  /** rua de cada face: [frontal (+Z local), de trás (−Z local)] */
+  faceAisle: (string | undefined)[];
+  /** estantes já numeradas na rua antes deste rack, por face (numeração contínua ao longo da rua) */
+  estanteBase: number[];
+}
+
+/** face de acesso de uma posição: racks duplos usam a fileira; racks simples, a face que tem rua */
+export function slotSide(r: RackRT, idx: number): 0 | 1 {
+  if (r.rows > 1) return slotAddr(r, idx).row % 2 === 0 ? 0 : 1;
+  return r.faceAisle[0] || !r.faceAisle[1] ? 0 : 1;
 }
 
 export const SLOT_FREE = 0;
@@ -77,6 +87,9 @@ export function slotAddr(r: RackRT, idx: number): SlotAddr {
 /** endereço legível: código do rack + vão (2 dígitos) + nível (ex.: R01-023); fileira só em racks duplos */
 export function slotLabel(r: RackRT, idx: number): string {
   const a = slotAddr(r, idx);
+  const side = slotSide(r, idx);
+  const aisle = r.faceAisle[side];
+  if (aisle) return `${aisle}${String(r.estanteBase[side] + a.bay + 1).padStart(2, '0')}${a.level + 1}`;
   const row = r.rows > 1 ? `.${a.row + 1}` : '';
   return `${r.label}${row}-${String(a.bay + 1).padStart(2, '0')}${a.level + 1}`;
 }
@@ -224,6 +237,14 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     else if (!codes.includes(a) && aisles.length) out.push({ level: 'aviso', msg: `O endereço transitório "${t.name}" aponta para a rua "${a}", que não existe.` });
   }
   out.push(...validateEquipment(sc, c('charger')));
+  if (sc.storage.mode === 'phased') {
+    const movers = sc.storage.step1With.filter((k) => k !== 'forklift').some((k) => (sc.equipment.find((e) => e.kind === k)?.count ?? 0) > 0);
+    if (!movers) out.push({ level: 'aviso', msg: 'Armazenagem faseada sem equipamento de etapa 1 (paleteira/transpaleteira/AMR com quantidade > 0): a empilhadeira fará as duas etapas.' });
+    const codes = new Set(aisles.map(aisleCodeOf));
+    const transitCodes = new Set(layout.elements.filter((e) => e.type === 'transit').map((t) => aisleOf(t, aisles)).filter(Boolean));
+    if (!aisles.length) out.push({ level: 'aviso', msg: 'Armazenagem faseada sem ruas no layout (ferramenta "Rua"): os endereços não terão rua.' });
+    for (const c of codes) if (!transitCodes.has(c)) out.push({ level: 'aviso', msg: `A rua "${c}" não tem endereço transitório: a etapa 1 levará o palete direto ao destino, sem limite de espaço.` });
+  }
   const rc = sc.receiving;
   if (rc.damagePalletPct > 0 && sc.checkers.count < 1 && needIn)
     out.push({ level: 'aviso', msg: 'Há avarias configuradas, mas não há conferentes: sem conferência não há detecção nem triagem de avarias.' });
@@ -283,8 +304,44 @@ export function buildWorld(layout: Layout, sc: Scenario, sharedNav?: Nav): World
         const lx = -e.length / 2 + ((cb + 0.5) * e.length) / bays;
         access.push([toWorld(e, lx, e.width / 2 + aisleOff), toWorld(e, lx, -(e.width / 2 + aisleOff))]);
       }
-      return { idx, el: e, bays, levels, rows, capacity: bays * levels * rows, stock: 0, occupied: 0, slots: new Uint8Array(bays * levels * rows), label: `R${String(idx + 1).padStart(2, '0')}`, pickFace: !!e.pickFace, zone: 2 as 0 | 1 | 2, rank: 0, access };
+      return { idx, el: e, bays, levels, rows, capacity: bays * levels * rows, stock: 0, occupied: 0, slots: new Uint8Array(bays * levels * rows), label: `R${String(idx + 1).padStart(2, '0')}`, pickFace: !!e.pickFace, zone: 2 as 0 | 1 | 2, rank: 0, access, faceAisle: [undefined, undefined], estanteBase: [0, 0] };
     });
+
+  // rua de cada face (manual no painel do rack ou a rua mais próxima daquele lado) e numeração das estantes
+  const aisleEls = els.filter((e) => e.type === 'aisle');
+  const faces = new Map<string, { r: RackRT; side: 0 | 1; pos: number }[]>();
+  for (const r of racks) {
+    const manual = [r.el.aisleFront?.trim().toUpperCase() || undefined, r.el.aisleBack?.trim().toUpperCase() || undefined];
+    for (const side of [0, 1] as const) {
+      const pt = r.access[Math.floor(r.bays / 2)][side];
+      let code = manual[side];
+      let ael: LayoutElement | undefined = aisleEls.find((a) => (code ? aisleCodeOf(a) === code : pointInElement(a, pt, 0.3)));
+      if (!code && !ael) {
+        let bd = 4; // máx. 4 m de distância até uma rua
+        for (const a of aisleEls) {
+          const gap = Math.abs(toLocal(a, pt).z) - a.width / 2;
+          if (gap < bd && pointInElement(a, pt, bd)) {
+            bd = gap;
+            ael = a;
+          }
+        }
+      }
+      if (!code && ael) code = aisleCodeOf(ael);
+      r.faceAisle[side] = code;
+      if (code) {
+        const axis = ael ? toLocal(ael, pt).x : pt.x;
+        faces.set(code, [...(faces.get(code) ?? []), { r, side, pos: axis }]);
+      }
+    }
+  }
+  for (const list of faces.values()) {
+    list.sort((a, b) => a.pos - b.pos);
+    let acc = 0;
+    for (const f of list) {
+      f.r.estanteBase[f.side] = acc;
+      acc += f.r.bays;
+    }
+  }
 
   // ranking por proximidade média das docas (ABC slotting)
   const docks = [...docksIn, ...docksOut];
@@ -313,7 +370,6 @@ export function buildWorld(layout: Layout, sc: Scenario, sharedNav?: Nav): World
   if (!pickRacks.length) pickRacks = racks;
 
   const area = (type: string) => els.filter((e) => e.type === type).map((e, idx): AreaRT => ({ idx, el: e, capacity: areaCapacity(e), occupied: 0, pt: { x: e.x, z: e.z } }));
-  const aisleEls = els.filter((e) => e.type === 'aisle');
   const aislesRT = area('aisle').map((a) => ({ ...a, aisle: aisleCodeOf(a.el) }));
   const transits = area('transit').map((a) => ({ ...a, aisle: aisleOf(a.el, aisleEls) }));
   const transitsByAisle = new Map<string, AreaRT[]>();
