@@ -1,13 +1,15 @@
 import type { ArrivalSpec, EquipmentKind, FleetSpec, Layout, ReplicationResult, RunKpis, Scenario, HourSeries, VehicleType, PeopleRole } from '../model/types';
 import { trailerDepthM } from '../model/receiving';
 import { startPalletProcess } from './workflow';
+import { planRoute, routeTravelSec, splitAmongPickers, type AisleInfo, type PickPos, type Stop } from '../model/picking';
+import { toLocal, toWorld } from '../math/spatial';
 import { amrChargeHours } from '../model/equipment';
 import { PEOPLE_ROLES, breakMinutesPerDay, effectiveVehicles, offsetInShift, waveOf } from '../model/traffic';
-import { Rng, sampleDist } from '../math/rng';
+import { Rng, distMean as distMeanOf, sampleDist } from '../math/rng';
 import { mean, percentile } from '../math/stats';
 import type { Pt } from '../math/spatial';
 import { Pool, type PoolItem, Countdown, Sim, type Process } from './engine';
-import { type Agent, type AreaRT, type ConveyorRT, type DockItem, type RackRT, SLOT_FREE, SLOT_OCCUPIED, SLOT_RESERVED, type World, buildWorld, findSlot, slotAddr, slotSide } from './world';
+import { type Agent, type AreaRT, type ConveyorRT, type DockItem, type RackRT, SLOT_FREE, SLOT_OCCUPIED, SLOT_RESERVED, type World, buildWorld, findSlot, slotAddr, slotLabel, slotSide } from './world';
 export type { World };
 
 /** Interface opcional para animação 3D. */
@@ -117,6 +119,18 @@ export class SimModel {
   skuCls: (0 | 1 | 2)[];
   private truckSeq = 0;
   private pickBands: RackRT[][];
+  /** posições de picking por classe (A, B, C): nível mais baixo das faces de picking */
+  private pickPos: PickPos[][] = [[], [], []];
+  private aisleInfo = new Map<string, AisleInfo>();
+  private emptyAddr = new Set<string>();
+  private readonly pickPalletTimes: number[] = [];
+  private readonly pickRouteU: number[] = [];
+  private readonly pickRouteZ: number[] = [];
+  private pickPallets = 0;
+  private pickBoxes = 0;
+  private pickStockouts = 0;
+  private pickStockoutSec = 0;
+  private rngPick: Rng;
 
   constructor(readonly sc: Scenario, layout: Layout, seed: number, readonly tracer?: Tracer, world?: World) {
     const root = new Rng(seed);
@@ -126,6 +140,7 @@ export class SimModel {
     this.rngVeh = root.fork('vehicles');
     this.rngDelay = root.fork('delay');
     this.rngDmg = root.fork('damage');
+    this.rngPick = root.fork('picking');
     this.vehIn = effectiveVehicles(sc, 'in');
     this.vehOut = effectiveVehicles(sc, 'out');
     this.vStats = this.vehIn.map((v) => ({ name: v.name, n: 0, dockSec: 0, waitSec: 0 }));
@@ -198,6 +213,7 @@ export class SimModel {
     const n = sorted.length;
     this.pickBands = [sorted.slice(0, Math.max(1, Math.round(n * 0.34))), sorted.slice(Math.round(n * 0.2), Math.max(Math.round(n * 0.6), 1) + 1), sorted];
     if (!this.pickBands[1].length) this.pickBands[1] = sorted;
+    if (sc.picking.mode === 'pallet') this.setupPicking();
 
     // ---- estoque inicial ----
     for (const r of w.racks) {
@@ -234,7 +250,7 @@ export class SimModel {
     sim.spawn(this.vehicleArrivals(sc.arrivalsOut, sc.outboundTrucksPerHour, () => this.outboundTruck()));
     this.startBreaks();
     this.startTriageClearing();
-    sim.spawn(this.arrivals(sc.ordersPerHour, () => this.order()));
+    sim.spawn(this.arrivals(sc.ordersPerHour, () => (sc.picking.mode === 'pallet' ? this.orderPallet() : this.order())));
     sim.spawn(this.sampler());
   }
 
@@ -828,6 +844,155 @@ export class SimModel {
     }
   }
 
+  /** posições de picking (nível mais baixo) e ruas, com o endereço de cada uma */
+  private setupPicking() {
+    const w = this.world;
+    for (const a of w.aisles) {
+      const code = a.aisle ?? a.el.name;
+      this.aisleInfo.set(code, { code, lo: toWorld(a.el, -a.el.length / 2, 0), hi: toWorld(a.el, a.el.length / 2, 0) });
+    }
+    this.emptyAddr = new Set(this.sc.picking.stockout.addresses);
+    this.pickBands.forEach((rackList, cls) => {
+      for (const r of rackList) {
+        for (let row = 0; row < r.rows; row++) {
+          for (let bay = 0; bay < r.bays; bay++) {
+            const idx = (row * r.bays + bay) * r.levels; // nível 0
+            const side = slotSide(r, idx);
+            const aisle = r.faceAisle[side] ?? '?';
+            const pt = r.access[bay][side];
+            const info = this.aisleInfo.get(aisle);
+            const el = w.aisles.find((x) => (x.aisle ?? x.el.name) === aisle)?.el;
+            const axis = el ? toLocal(el, pt).x : pt.x;
+            const sideLR: 0 | 1 = el && toLocal(el, pt).z < 0 ? 1 : 0;
+            void info;
+            this.pickPos[cls].push({ label: slotLabel(r, idx), aisle, axis, side: sideLR, pt });
+          }
+        }
+      }
+    });
+    for (const list of this.pickPos) if (!list.length) list.push(...this.pickPos.flat());
+  }
+
+  /** ponto do stage de expedição (ou, na falta, a doca de saída / ponto base) */
+  private get stageOutPt(): Pt {
+    const w = this.world;
+    return w.stagesOut[0]?.pt ?? w.docksOut[0]?.inner ?? w.home;
+  }
+
+  private pickTravel(order: Stop[], wk: { speedEmpty: number; speedLoaded: number }, from: Pt, back: Pt): number {
+    const tt = (d: number, loaded: boolean) => travelTime(d, loaded ? wk.speedLoaded : wk.speedEmpty, this.sc.accel);
+    return routeTravelSec(order, from, back, (a, b) => this.world.nav.distance(a, b), tt);
+  }
+
+  /** pedido de picking: caixas por pedido e % A/B/C definidos pelo usuário; dividido entre os separadores por rua */
+  private *orderPallet(): Process {
+    const sc = this.sc;
+    const pk = sc.picking;
+    const c = this.c;
+    const tArr = this.sim.now;
+    c.ordersArrived++;
+    const boxes = Math.max(1, Math.round(this.rngPick.normal(pk.boxesPerOrder.mean, pk.boxesPerOrder.sd)));
+    const tot = Math.max(1e-9, pk.abc.a + pk.abc.b + pk.abc.c);
+    const weights = [pk.abc.a / tot, pk.abc.b / tot, pk.abc.c / tot];
+    const stops: Stop[] = [];
+    let left = boxes;
+    while (left > 0) {
+      const k = Math.min(left, Math.max(1, Math.round(this.rngPick.lognormal(sc.cartonsPerLine.mean, sc.cartonsPerLine.sd))));
+      const cls = this.rngPick.pick(weights);
+      const list = this.pickPos[cls];
+      const pos = list[this.rngPick.int(list.length)];
+      this.world.nav.key(pos.pt); // campo de distância calculado uma vez por ponto
+      stops.push({ pos, boxes: k });
+      left -= k;
+    }
+    const stage = this.stageOutPt;
+    this.world.nav.key(stage);
+    const parts = splitAmongPickers(stops, pk.pickersPerOrder);
+    const done = new Countdown(this.sim, parts.length);
+    for (const part of parts) this.sim.spawn(this.pickerRoute(part, done, tArr));
+    yield done.signal;
+    if (tArr >= this.warm) {
+      this.orderCycle.push((this.sim.now - tArr) / 60);
+      c.orders++;
+      c.lines += stops.length;
+      c.cartons += boxes;
+    }
+    if (this.measuring) this.hourBucket().ord++;
+  }
+
+  /** um separador: percorre sua rota, lê o endereço, pega e coloca as caixas; ao atingir o limite leva o palete ao stage */
+  private *pickerRoute(part: Stop[], done: Countdown, tArr: number): Process {
+    const sc = this.sc;
+    const pk = sc.picking;
+    const stage = this.stageOutPt;
+    const wk: Agent = yield this.workers.request(stage);
+    const measured = tArr >= this.warm;
+    const dist = (a: Pt, b: Pt) => this.world.nav.distance(a, b);
+    const here: Pt = { x: wk.x, z: wk.z };
+    // os dois formatos sobre as mesmas paradas: tempo de rota = manuseio + deslocamento
+    const handle = part.length * distMeanOf(pk.scan) + part.reduce((n, s) => n + s.boxes, 0) * (distMeanOf(pk.pick) + distMeanOf(pk.place));
+    const uRoute = planRoute('u', part, here, this.aisleInfo, dist);
+    const zRoute = planRoute('zigzag', part, here, this.aisleInfo, dist);
+    if (measured) {
+      this.pickRouteU.push((handle + this.pickTravel(uRoute, wk, here, stage)) / 60);
+      this.pickRouteZ.push((handle + this.pickTravel(zRoute, wk, here, stage)) / 60);
+    }
+    const route = pk.route === 'u' ? uRoute : zRoute;
+    const limitOf = () => Math.max(1, Math.round(this.rngPick.normal(pk.palletLimit.mean, pk.palletLimit.sd)));
+    let limit = limitOf();
+    let onPallet = 0;
+    let t0 = -1;
+    const closePallet = () => {
+      if (measured) {
+        this.pickPalletTimes.push((this.sim.now - t0) / 60);
+        this.pickPallets++;
+        this.pickBoxes += onPallet;
+      }
+      onPallet = 0;
+      t0 = -1;
+      limit = limitOf();
+    };
+    let loaded = false;
+    for (let i = 0; i < route.length; i++) {
+      const st = route[i];
+      yield this.go(wk, st.pos.pt, loaded);
+      loaded = true;
+      yield sampleDist(this.rngSvc, pk.scan); // ler o código de barras do endereço
+      // furo de estoque: endereço vazio ao chegar; espera a reposição
+      const empty = pk.stockout.mode === 'positions' ? this.emptyAddr.has(st.pos.label) : pk.stockout.mode === 'pct' ? this.rngPick.next() < pk.stockout.pct : false;
+      if (empty) {
+        const lost = Math.max(0, sampleDist(this.rngSvc, pk.stockout.delay));
+        yield lost;
+        if (measured) {
+          this.pickStockouts++;
+          this.pickStockoutSec += lost;
+        }
+      }
+      let left = st.boxes;
+      while (left > 0) {
+        const take = Math.min(left, limit - onPallet);
+        if (t0 < 0) t0 = this.sim.now; // início do palete: coleta da primeira caixa
+        yield this.sum(pk.pick, take) + this.sum(pk.place, take);
+        onPallet += take;
+        left -= take;
+        if (onPallet >= limit) {
+          closePallet();
+          yield this.go(wk, stage, true); // palete cheio: leva ao stage e volta vazio
+          if (left > 0 || i < route.length - 1) {
+            yield this.go(wk, st.pos.pt, false);
+          }
+        }
+      }
+    }
+    if (onPallet > 0) {
+      closePallet();
+      yield this.go(wk, stage, true);
+    }
+    wk.tasks++;
+    this.workers.release(wk);
+    done.tick();
+  }
+
   private *order(): Process {
     const sc = this.sc;
     const c = this.c;
@@ -1063,6 +1228,15 @@ export class SimModel {
       amrChargesPerDay: this.amrCharges / days,
       amrChargeShare: this.eqPools.amr.items.length ? this.amrChargeSec / (this.eqPools.amr.items.length * Math.max(1e-9, end - this.warm)) : 0,
       chargerWaitMean: this.chargerSlots ? mean(this.chargerSlots.waits) / 60 : 0,
+      pickPalletsPerDay: this.pickPallets / days,
+      boxesPerPallet: this.pickPallets ? this.pickBoxes / this.pickPallets : 0,
+      pickPalletTimeMean: mean(this.pickPalletTimes),
+      pickRouteTimeU: mean(this.pickRouteU),
+      pickRouteTimeZigzag: mean(this.pickRouteZ),
+      // produtividade pelo tempo trabalhado dos separadores (andar, ler, pegar, colocar, levar ao stage): vem do tempo por caixa
+      boxesPerPickerHour: sc.picking.mode === 'pallet' && this.busyTotal(this.workers) > 0 ? c.cartons / (this.busyTotal(this.workers) / 3600) : 0,
+      stockoutPicksPerDay: this.pickStockouts / days,
+      stockoutTimeLostPerDay: this.pickStockoutSec / 60 / days,
     };
     kpis.backlogOrders = this.workers.queueLength; // pedidos ainda aguardando operário ao final
     return {

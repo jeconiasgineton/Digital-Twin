@@ -2,6 +2,7 @@ import type { Dist, Scenario } from './types';
 import { NIOSH_LOAD_KG, defaultEquipment } from './equipment';
 import { defaultArrival, defaultCalendar } from './traffic';
 import { defaultReceiving } from './receiving';
+import { defaultPicking } from './picking';
 
 const tri = (min: number, mode: number, max: number): Dist => ({ kind: 'triangular', a: min, b: mode, c: max });
 
@@ -75,6 +76,7 @@ export function defaultScenario(): Scenario {
     receiving: defaultReceiving(),
     storage: { mode: 'direct', step1With: ['palletTruck', 'palletJack', 'amr'] },
     processes: [],
+    picking: defaultPicking(),
     useCustomProcesses: false,
   };
 }

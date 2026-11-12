@@ -1,3 +1,4 @@
+import type { PickingSpec } from './picking';
 import type { ProcessDef } from './process';
 
 /**
@@ -52,6 +53,8 @@ export interface LayoutElement {
   /** racks: rua da face frontal (+Z local) e da face de trás (−Z local); vazio = a rua mais próxima daquele lado */
   aisleFront?: string;
   aisleBack?: string;
+  /** stage: de recebimento (padrão) ou de expedição (destino dos paletes separados) */
+  stageKind?: 'in' | 'out';
 }
 
 export interface Layout {
@@ -272,6 +275,8 @@ export interface Scenario {
   storage: StorageSpec;
   /** processos personalizados (blocos de ações genéricas) */
   processes: ProcessDef[];
+  /** separação picking por palete (rota, tempos, furos de estoque) */
+  picking: PickingSpec;
   /** true: o processo personalizado de recebimento conduz cada palete que sai do veículo, no lugar do fluxo padrão */
   useCustomProcesses: boolean;
 }
@@ -362,6 +367,15 @@ export interface RunKpis {
   amrChargesPerDay: number; // cargas por dia (todos os AMR)
   amrChargeShare: number; // fração do tempo dos AMR em ida à estação, carga e setup
   chargerWaitMean: number; // espera por vaga na estação de carga (min)
+  // separação picking por palete
+  pickPalletsPerDay: number;
+  boxesPerPallet: number; // caixas por palete de separação (média)
+  pickPalletTimeMean: number; // da 1ª caixa à última de cada palete (min)
+  pickRouteTimeU: number; // tempo médio de rota por separador, se fosse em U (min)
+  pickRouteTimeZigzag: number; // idem, em zigue-zague (min)
+  boxesPerPickerHour: number;
+  stockoutPicksPerDay: number; // visitas a endereço vazio
+  stockoutTimeLostPerDay: number; // tempo perdido com furos (min/dia)
 }
 
 export interface VehicleStat {

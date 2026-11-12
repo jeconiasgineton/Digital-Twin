@@ -3,6 +3,7 @@ import type { ArrivalSpec, BreakSpec, Dist, DistKind, EquipmentKind, EquipmentSp
 import { defaultScenario } from '../model/defaults';
 import { defaultEquipment, normalizeEquipment } from '../model/equipment';
 import { PEOPLE_ROLES } from '../model/traffic';
+import { parseAddresses } from '../model/picking';
 import { STEP_LABEL, portsOf, type ProcessDef, type Step, type StepType } from '../model/process';
 import { defaultLayoutParams, generateLayout, newId, type LayoutParams } from '../model/layoutGen';
 import { linearEnds, toWorld } from '../math/spatial';
@@ -132,6 +133,13 @@ function parseDist(kindRaw: unknown, p1: unknown, p2: unknown, p3: unknown, fb: 
       return { kind, a, b: b ?? 0 };
   }
 }
+
+const PICK_OPS: ['scan' | 'pick' | 'place' | 'delay', string[]][] = [
+  ['scan', ['leitura_endereco', 'ler_endereco', 'scan']],
+  ['pick', ['pegar_caixa', 'coleta_caixa']],
+  ['place', ['colocar_caixa', 'colocar_palete']],
+  ['delay', ['furo_reposicao', 'reposicao_furo']],
+];
 
 const OPS: [keyof Scenario['ops'], string[]][] = [
   ['unloadPallet', ['descarga_palete', 'descarga', 'unload']],
@@ -264,6 +272,25 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
       if (kinds.length) sc.storage.step1With = kinds;
       else warn('armazenagem_etapa1_equipamentos: use paleteira_manual, transpaleteira e/ou amr.');
     }
+    const sm = norm(g('separacao_modo'));
+    if (sm) sc.picking.mode = sm.startsWith('pal') || sm === 'pallet' ? 'pallet' : 'legacy';
+    setN('pedido_caixas_media', (v) => (sc.picking.boxesPerOrder.mean = Math.max(1, v)));
+    setN('pedido_caixas_desvio', (v) => (sc.picking.boxesPerOrder.sd = Math.max(0, v)));
+    for (const [k, key] of [['curva_a_pct', 'a'], ['curva_b_pct', 'b'], ['curva_c_pct', 'c']] as const) {
+      const f = frac(g(k));
+      if (f !== undefined) sc.picking.abc[key] = Math.max(0, f);
+    }
+    setN('palete_limite_media', (v) => (sc.picking.palletLimit.mean = Math.max(1, v)));
+    setN('palete_limite_desvio', (v) => (sc.picking.palletLimit.sd = Math.max(0, v)));
+    const rt = norm(g('rota_separacao'));
+    if (rt) sc.picking.route = rt.startsWith('zig') ? 'zigzag' : 'u';
+    setN('separadores_por_pedido', (v) => (sc.picking.pickersPerOrder = Math.max(1, Math.round(v))));
+    const fm = norm(g('furo_modo'));
+    if (fm) sc.picking.stockout.mode = fm.startsWith('pos') ? 'positions' : fm.startsWith('pct') || fm.startsWith('perc') ? 'pct' : 'off';
+    const fp = frac(g('furo_pct'));
+    if (fp !== undefined) sc.picking.stockout.pct = Math.min(1, Math.max(0, fp));
+    const fa = g('furo_enderecos');
+    if (fa !== undefined && fa !== null) sc.picking.stockout.addresses = parseAddresses(String(fa));
     const cp = norm(g('processos_personalizados'));
     if (cp) sc.useCustomProcesses = ['s', 'sim', '1', 'true', 'x'].includes(cp);
     setN('limite_espera_doca_min', (v) => (sc.dockWaitThresholdMin = v), [0, 600]);
@@ -433,6 +460,14 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     found.push('Operações');
     for (const r of table(wsO).rows) {
       const name = norm(pick(r, 'operacao', 'nome'));
+      const pk = PICK_OPS.find(([, al]) => al.includes(name));
+      if (pk) {
+        const cur = pk[0] === 'delay' ? sc.picking.stockout.delay : sc.picking[pk[0]];
+        const d = parseDist(pick(r, 'distribuicao'), pick(r, 'p1', 'param1'), pick(r, 'p2', 'param2'), pick(r, 'p3', 'param3'), cur, warn, name);
+        if (pk[0] === 'delay') sc.picking.stockout.delay = d;
+        else sc.picking[pk[0]] = d;
+        continue;
+      }
       const hit = OPS.find(([, al]) => al.includes(name));
       if (!hit) {
         if (name) warn(`Operação "${name}" desconhecida.`);
@@ -484,6 +519,7 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
         levels: type === 'rack' ? Math.round(num(pick(r, 'niveis'), 4)!) : undefined, rows: type === 'rack' ? Math.round(num(pick(r, 'fileiras'), width > 1.6 ? 2 : 1)!) : undefined,
         pickFace: type === 'rack' ? ['s', 'sim', '1', 'true', 'x'].includes(picking) : undefined,
         speed: type === 'conveyor' ? num(pick(r, 'velocidade'), 0.6) : undefined,
+        stageKind: type === 'stage' && ['s', 'sim', '1', 'true', 'x'].includes(norm(pick(r, 'stage_saida'))) ? 'out' : undefined,
         aisleFront: type === 'rack' && pick(r, 'rua_frente') ? String(pick(r, 'rua_frente')).trim().toUpperCase() : undefined,
         aisleBack: type === 'rack' && pick(r, 'rua_fundo') ? String(pick(r, 'rua_fundo')).trim().toUpperCase() : undefined,
         capacity: ['transit', 'stage', 'triage', 'charger'].includes(type) && num(pick(r, 'capacidade', 'capacity')) !== undefined ? Math.round(num(pick(r, 'capacidade', 'capacity'))!) : undefined,
@@ -595,6 +631,19 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['descarga_equipamentos', sc.receiving.unloadWith.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Equipamentos que podem descarregar o baú (o disponível é acionado), separados por ;'],
     ['armazenagem_modo', sc.storage.mode === 'phased' ? 'faseada' : 'direta', 'direta (empilhadeira do stage ao endereço) | faseada (etapa 1 sem elevação até a rua; etapa 2 elevação)'],
     ['armazenagem_etapa1_equipamentos', sc.storage.step1With.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Faseada: equipamentos da etapa 1, separados por ; (o disponível é acionado)'],
+    ['separacao_modo', sc.picking.mode === 'pallet' ? 'palete' : 'legado', 'legado (esteira e embalagem) | palete (rota, leitura de endereço, limite do palete, furos)'],
+    ['pedido_caixas_media', sc.picking.boxesPerOrder.mean, 'Separação por palete: caixas por pedido – média'],
+    ['pedido_caixas_desvio', sc.picking.boxesPerOrder.sd, 'Caixas por pedido – desvio'],
+    ['curva_a_pct', sc.picking.abc.a, 'Percentual das caixas do pedido que são da curva A'],
+    ['curva_b_pct', sc.picking.abc.b, 'Percentual da curva B'],
+    ['curva_c_pct', sc.picking.abc.c, 'Percentual da curva C'],
+    ['palete_limite_media', sc.picking.palletLimit.mean, 'Limite de caixas por palete de separação – média'],
+    ['palete_limite_desvio', sc.picking.palletLimit.sd, 'Limite de caixas por palete – desvio'],
+    ['rota_separacao', sc.picking.route === 'zigzag' ? 'zigzag' : 'u', 'u (um lado na ida, o outro na volta) | zigzag (caixa mais próxima, qualquer lado)'],
+    ['separadores_por_pedido', sc.picking.pickersPerOrder, 'Separadores por pedido (o pedido é dividido por ruas)'],
+    ['furo_modo', sc.picking.stockout.mode === 'positions' ? 'posicoes' : sc.picking.stockout.mode === 'pct' ? 'percentual' : 'off', 'Furo de estoque: off | percentual | posicoes'],
+    ['furo_pct', sc.picking.stockout.pct, 'Furo por percentual: probabilidade de o endereço estar vazio ao chegar'],
+    ['furo_enderecos', sc.picking.stockout.addresses.join(', '), 'Furo por posições: endereços vazios (ex.: A015, B023)'],
     ['processos_personalizados', sc.useCustomProcesses ? 'S' : 'N', 'S = o primeiro processo da aba Processos conduz cada palete do recebimento (blocos de ações genéricas)'],
     ['limite_espera_doca_min', sc.dockWaitThresholdMin, 'Espera na doca acima da qual o caminhão conta como gargalo (min)'],
     ['amr_trabalha_intervalos', sc.calendar.amrWorksDuringBreaks ? 'S' : 'N', 'S = AMR continuam trabalhando nos intervalos das pessoas'],
@@ -673,6 +722,10 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   o.addRow(distRow('separacao_caixa', sc.ops.pickCarton, 'Separar uma caixa (s)'));
   o.addRow(distRow('manobra_doca', sc.ops.dockTurnover, 'Manobra/troca de caminhão na doca (s)'));
   o.addRow(distRow('embalagem_pedido', sc.ops.packOrder, 'Consolidação do pedido na estação (s)'));
+  o.addRow(distRow('leitura_endereco', sc.picking.scan, 'Separação por palete: ler o código do endereço (s)'));
+  o.addRow(distRow('pegar_caixa', sc.picking.pick, 'Separação por palete: pegar uma caixa (s)'));
+  o.addRow(distRow('colocar_caixa', sc.picking.place, 'Separação por palete: colocar a caixa no palete (s)'));
+  o.addRow(distRow('furo_reposicao', sc.picking.stockout.delay, 'Furo de estoque: tempo perdido até a reposição (s)'));
   o.addRow(distRow('triagem_caixa', sc.ops.triageCarton, 'Triagem: mover uma caixa avariada para o palete de avarias (s por caixa)'));
   styleHeader(o);
 
@@ -682,10 +735,10 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   styleHeader(s);
 
   const l = wb.addWorksheet('Layout');
-  l.columns = ['Tipo', 'Nome', 'X', 'Z', 'Rot', 'Comprimento', 'Largura', 'Vaos', 'Niveis', 'Fileiras', 'Picking', 'Velocidade', 'Capacidade', 'Rua', 'Prioridade', 'Rua_frente', 'Rua_fundo'].map((h) => ({ header: h, width: h === 'Nome' ? 30 : 13 }));
+  l.columns = ['Tipo', 'Nome', 'X', 'Z', 'Rot', 'Comprimento', 'Largura', 'Vaos', 'Niveis', 'Fileiras', 'Picking', 'Velocidade', 'Capacidade', 'Rua', 'Prioridade', 'Rua_frente', 'Rua_fundo', 'Stage_saida'].map((h) => ({ header: h, width: h === 'Nome' ? 30 : 13 }));
   const tname: Record<string, string> = { rack: 'rack', dockIn: 'doca_entrada', dockOut: 'doca_saida', conveyor: 'esteira', wall: 'parede', zone: 'zona', station: 'estacao', parking: 'estacionamento', aisle: 'rua', transit: 'endereco_transitorio', stage: 'stage', triage: 'triagem', charger: 'carga_amr' };
   for (const e of layout?.elements ?? [])
-    l.addRow([tname[e.type], e.name, +e.x.toFixed(2), +e.z.toFixed(2), +e.rot.toFixed(1), +e.length.toFixed(2), +e.width.toFixed(2), e.bays ?? null, e.levels ?? null, e.rows ?? null, e.pickFace ? 'S' : null, e.speed ?? null, e.capacity ?? null, e.aisle ?? null, e.priority ?? null, e.aisleFront ?? null, e.aisleBack ?? null]);
+    l.addRow([tname[e.type], e.name, +e.x.toFixed(2), +e.z.toFixed(2), +e.rot.toFixed(1), +e.length.toFixed(2), +e.width.toFixed(2), e.bays ?? null, e.levels ?? null, e.rows ?? null, e.pickFace ? 'S' : null, e.speed ?? null, e.capacity ?? null, e.aisle ?? null, e.priority ?? null, e.aisleFront ?? null, e.aisleBack ?? null, e.stageKind === 'out' ? 'S' : null]);
   styleHeader(l);
   return wb;
 }

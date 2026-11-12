@@ -67,6 +67,7 @@ export function propertiesBox(ctx: AppCtx): HTMLElement {
     );
     if (el.type !== 'charger' && el.capacity !== undefined) fields.push(h('button', { class: 'b sm', onclick: () => { el.capacity = undefined; ed(); ctxRerender(ctx); } }, 'Voltar à capacidade pela área'));
   }
+  if (el.type === 'stage') fields.push(selField('Stage de', () => el.stageKind ?? 'in', (v) => ((el.stageKind = v === 'out' ? 'out' : undefined), ed()), [['in', 'Recebimento (paletes descarregados)'], ['out', 'Expedição (paletes separados)']]));
   if (el.type === 'triage') fields.push(numField('Prioridade de uso', () => el.priority ?? 1, (v) => ((el.priority = Math.max(1, Math.round(v))), ed()), { step: 1, min: 1, title: '1 = primeira. Ao lotar, o palete segue para a próxima.' }));
   if (el.type === 'conveyor') fields.push(numField('Velocidade', () => el.speed ?? 0.6, (v) => ((el.speed = v), ed()), { step: 0.1, min: 0.05, unit: 'm/s' }));
   box.append(

@@ -1,5 +1,7 @@
 import type { ArrivalSpec, BreakSpec, Dist, DistKind, EquipmentSpec, FleetSpec, PeopleRole, Scenario, VehicleType } from '../model/types';
 import { EQUIPMENT_NAMES } from '../model/equipment';
+import { buildWorld, slotLabel } from '../sim/world';
+import { PICKING_SOURCE, ROUTE_LABEL, parseAddresses, type PickRoute } from '../model/picking';
 import { PEOPLE_ROLES, ROLE_NAMES, breakWaves, defaultBreak, presetVehicle } from '../model/traffic';
 import { catalog, defaultEquipment, NIOSH_LOAD_KG } from '../model/equipment';
 import { hourlyProfile } from '../model/defaults';
@@ -316,6 +318,56 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
               } }), EQUIPMENT_NAMES[k]))),
             h('p', { class: 'note' }, 'O endereço de destino (rua + estante + nível) é definido após a conferência. O equipamento da etapa 1 leva o palete a um endereço transitório da rua do destino; se a rua estiver cheia, espera liberar espaço. Na etapa 2 a empilhadeira recebe o destino final, pega o palete na rua e faz a elevação. Sem equipamento de etapa 1 disponível, a empilhadeira faz as duas etapas.'))
         : h('p', { class: 'note' }, 'A empilhadeira busca o palete no stage e o leva ao endereço definido pelas regras de armazenagem e pela curva ABC, já com a elevação.'),
+    ], false),
+    section('Separação (picking por palete)', [
+      selField('Modo de separação', () => sc.picking.mode, (v) => ((sc.picking.mode = v), ch(), ctx.rerender()), [
+        ['legacy', 'Padrão antigo (esteira e embalagem)'], ['pallet', 'Picking por palete (rota, leitura, furos de estoque)'],
+      ]),
+      ...(sc.picking.mode === 'pallet' ? [
+        h('b', null, 'Pedido'),
+        numField('Caixas por pedido (média)', () => sc.picking.boxesPerOrder.mean, (v) => ((sc.picking.boxesPerOrder.mean = Math.max(1, v)), ch()), { step: 1, min: 1 }),
+        numField('… desvio', () => sc.picking.boxesPerOrder.sd, (v) => ((sc.picking.boxesPerOrder.sd = Math.max(0, v)), ch()), { step: 1, min: 0 }),
+        numField('Caixas da curva A', () => sc.picking.abc.a * 100, (v) => ((sc.picking.abc.a = Math.max(0, v / 100)), ch(), ctx.rerender()), { step: 5, min: 0, max: 100, unit: '%' }),
+        numField('Caixas da curva B', () => sc.picking.abc.b * 100, (v) => ((sc.picking.abc.b = Math.max(0, v / 100)), ch(), ctx.rerender()), { step: 5, min: 0, max: 100, unit: '%' }),
+        numField('Caixas da curva C', () => sc.picking.abc.c * 100, (v) => ((sc.picking.abc.c = Math.max(0, v / 100)), ch(), ctx.rerender()), { step: 5, min: 0, max: 100, unit: '%' }),
+        (() => {
+          const t = sc.picking.abc.a + sc.picking.abc.b + sc.picking.abc.c;
+          return h('p', { class: 'note' }, Math.abs(t - 1) > 0.005 ? `A soma é ${(t * 100).toFixed(0)}%: os percentuais serão normalizados para 100%.` : 'Cada caixa do pedido é da curva A, B ou C conforme esses percentuais; a curva define a zona do galpão onde ela é coletada.');
+        })(),
+        h('b', null, 'Palete e rota'),
+        numField('Caixas por palete – limite médio', () => sc.picking.palletLimit.mean, (v) => ((sc.picking.palletLimit.mean = Math.max(1, v)), ch()), { step: 5, min: 1, title: 'Ao atingir o limite, o operador leva o palete ao stage de expedição' }),
+        numField('… desvio', () => sc.picking.palletLimit.sd, (v) => ((sc.picking.palletLimit.sd = Math.max(0, v)), ch()), { step: 1, min: 0 }),
+        selField('Rota de separação', () => sc.picking.route, (v) => ((sc.picking.route = v as PickRoute), ch()), (Object.keys(ROUTE_LABEL) as PickRoute[]).map((k) => [k, ROUTE_LABEL[k]] as [PickRoute, string])),
+        numField('Separadores por pedido', () => sc.picking.pickersPerOrder, (v) => ((sc.picking.pickersPerOrder = Math.max(1, Math.round(v))), ch()), { step: 1, min: 1, title: 'O pedido é dividido por ruas entre os separadores (ex.: 100 caixas com 3 separadores)' }),
+        h('b', null, 'Tempos por movimento (s)'),
+        h('table', null,
+          h('thead', null, h('tr', null, ['Movimento', 'Distribuição', 'P1', 'P2', 'P3'].map((t) => h('th', null, t)))),
+          h('tbody', null,
+            distRow(ctx, 'Ler o código do endereço', () => sc.picking.scan, (d) => ((sc.picking.scan = d), ch())),
+            distRow(ctx, 'Pegar uma caixa', () => sc.picking.pick, (d) => ((sc.picking.pick = d), ch())),
+            distRow(ctx, 'Colocar no palete', () => sc.picking.place, (d) => ((sc.picking.place = d), ch())))),
+        h('p', { class: 'note' }, PICKING_SOURCE),
+        h('b', null, 'Furos de estoque'),
+        selField('Furo de estoque', () => sc.picking.stockout.mode, (v) => ((sc.picking.stockout.mode = v), ch(), ctx.rerender()), [
+          ['off', 'Sem furos (faces sempre abastecidas)'], ['pct', 'Percentual das visitas'], ['positions', 'Endereços definidos (vazios na simulação)'],
+        ]),
+        ...(sc.picking.stockout.mode === 'pct' ? [numField('Endereço vazio ao chegar', () => sc.picking.stockout.pct * 100, (v) => ((sc.picking.stockout.pct = Math.min(1, Math.max(0, v / 100))), ch()), { step: 0.5, min: 0, max: 100, unit: '%' })] : []),
+        ...(sc.picking.stockout.mode === 'positions' ? [h('label', { class: 'f', style: { gridTemplateColumns: '1fr' } }, h('span', null, 'Endereços vazios (ex.: A015, B023)'),
+          h('textarea', { rows: '3', style: { width: '100%', background: 'var(--bg3)', color: 'var(--tx)', border: '1px solid var(--line)', borderRadius: '5px', padding: '5px' }, value: sc.picking.stockout.addresses.join(', '),
+            onchange: (ev: Event) => { sc.picking.stockout.addresses = parseAddresses((ev.target as HTMLTextAreaElement).value); (ev.target as HTMLTextAreaElement).value = sc.picking.stockout.addresses.join(', '); ch(); } }))] : []),
+        ...(sc.picking.stockout.mode === 'positions' ? [(() => {
+          let ex: string[] = [];
+          try {
+            const w = buildWorld(ctx.layout, sc);
+            ex = w.pickRacks.slice(0, 4).flatMap((r) => [slotLabel(r, 0), slotLabel(r, Math.max(0, (Math.floor(r.bays / 2)) * r.levels))]).slice(0, 8);
+          } catch { /* layout incompleto */ }
+          return h('p', { class: 'note' }, ex.length ? `Endereços de picking que existem no layout atual (exemplos): ${[...new Set(ex)].join(', ')}.` : 'Desenhe racks (e ruas) no layout para ver os endereços de picking.');
+        })()] : []),
+        ...(sc.picking.stockout.mode !== 'off' ? [h('table', null,
+          h('thead', null, h('tr', null, ['Tempo perdido', 'Distribuição', 'P1', 'P2', 'P3'].map((t) => h('th', null, t)))),
+          h('tbody', null, distRow(ctx, 'Espera até repor o produto (s)', () => sc.picking.stockout.delay, (d) => ((sc.picking.stockout.delay = d), ch()))))] : []),
+        h('p', { class: 'note' }, 'Os endereços de picking são o nível mais baixo dos racks, no formato rua + estante + nível 1 (ex.: A011). O stage de expedição é o elemento "Stage" marcado como expedição no layout. A produtividade sai em caixas por hora de trabalho do separador, calculada a partir dos tempos acima.'),
+      ] : [h('p', { class: 'note' }, 'No modo antigo o operador coleta as caixas e as leva à esteira. Escolha "Picking por palete" para simular a rota, a leitura de endereço, o limite do palete e os furos de estoque.')]),
     ], false),
     section('Recebimento: descarga, avarias e triagem', [
       h('b', null, 'Equipamentos que podem descarregar o baú'),

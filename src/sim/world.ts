@@ -209,6 +209,8 @@ export interface World {
   /** endereços transitórios por rua */
   transitsByAisle: Map<string, AreaRT[]>;
   stages: AreaRT[];
+  /** stages de expedição (destino dos paletes de separação) */
+  stagesOut: AreaRT[];
   /** áreas de triagem em ordem de prioridade */
   triages: AreaRT[];
   chargers: AreaRT[];
@@ -238,6 +240,14 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     else if (!codes.includes(a) && aisles.length) out.push({ level: 'aviso', msg: `O endereço transitório "${t.name}" aponta para a rua "${a}", que não existe.` });
   }
   out.push(...validateEquipment(sc, c('charger')));
+  if (sc.picking.mode === 'pallet') {
+    if (layout.elements.filter((e) => e.type === 'stage' && e.stageKind === 'out').length === 0)
+      out.push({ level: 'aviso', msg: 'Separação por palete sem stage de expedição: os paletes serão levados à doca de saída (use a ferramenta "Stage" e marque "Expedição").' });
+    if (sc.workers.count < 1 && sc.ordersPerHour.some((v) => v > 0)) out.push({ level: 'erro', msg: 'Separação por palete sem operários (separadores) configurados.' });
+    if (sc.picking.abc.a + sc.picking.abc.b + sc.picking.abc.c <= 0) out.push({ level: 'erro', msg: 'Separação: os percentuais das curvas A, B e C somam zero.' });
+    if (!layout.elements.some((e) => e.type === 'aisle')) out.push({ level: 'aviso', msg: 'Separação por palete sem ruas desenhadas: a rota em U não distingue lados da rua e os endereços não terão letra de rua.' });
+    if (sc.picking.stockout.mode === 'positions' && sc.picking.stockout.addresses.length === 0) out.push({ level: 'aviso', msg: 'Furo de estoque por posições ativado, mas nenhum endereço foi informado.' });
+  }
   if (sc.useCustomProcesses) {
     const def = sc.processes.find((p) => p.trigger === 'unloadPallet');
     if (!def) out.push({ level: 'erro', msg: 'Processos personalizados ativados, mas não há nenhum processo de recebimento definido.' });
@@ -395,7 +405,7 @@ export function buildWorld(layout: Layout, sc: Scenario, sharedNav?: Nav): World
 
   return {
     layout, nav, racks, pickRacks, docksIn, docksOut, conveyors, stations, home, totalCapacity: totalCap, zones,
-    aisles: aislesRT, transits, transitsByAisle, stages: area('stage'), triages, chargers: area('charger'),
+    aisles: aislesRT, transits, transitsByAisle, stages: area('stage').filter((a) => a.el.stageKind !== 'out'), stagesOut: area('stage').filter((a) => a.el.stageKind === 'out'), triages, chargers: area('charger'),
   };
 }
 
