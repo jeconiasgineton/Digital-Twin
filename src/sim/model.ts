@@ -1,6 +1,7 @@
 import type { ArrivalSpec, EquipmentKind, FleetSpec, Layout, ReplicationResult, RunKpis, Scenario, HourSeries, VehicleType, PeopleRole } from '../model/types';
 import { trailerDepthM } from '../model/receiving';
-import { startPalletProcess } from './workflow';
+import { auxLoad, runProcess, startPalletProcess } from './workflow';
+import type { PickRouteParams, ProcessDef, ResourceKind, TaskStep } from '../model/process';
 import { effectiveSteps, type BoardStep, type ConferenceStep, type CustomizeStep, type ExpPerson, type ExpStep, type ReconcileStep } from '../model/expedition';
 import { planRoute, routeTravelSec, splitAmongPickers, type AisleInfo, type PickPos, type Stop } from '../model/picking';
 import { toLocal, toWorld } from '../math/spatial';
@@ -141,7 +142,7 @@ export class SimModel {
   private pickBoxes = 0;
   private pickStockouts = 0;
   private pickStockoutSec = 0;
-  private rngPick: Rng;
+  rngPick: Rng;
   /** paletes prontos no stage de expedição (carga do caminhão a partir do stage) */
   /** travas de acesso ao baú: uma por doca (um equipamento por vez dentro do veículo) */
   private trailerLocks = new Map<DockItem, Pool<PoolItem>>();
@@ -152,13 +153,17 @@ export class SimModel {
   private pickBusySec = 0;
   readonly stageOutStore: Store<StageToken>;
   private loadFormLock: Pool<PoolItem>;
+  /** processos personalizados de separação, palete full e expedição (o primeiro da lista de cada tipo) */
+  private customOrder?: ProcessDef;
+  private customFull?: ProcessDef;
+  private customLoad?: ProcessDef;
   private expSteps: ExpStep[] = [];
   private readonly loadReady: number[] = [];
   private readonly expSpan: Record<'conference' | 'reconcile' | 'customize' | 'board' | 'close', number[]> = { conference: [], reconcile: [], customize: [], board: [], close: [] };
   private expLoads = 0;
   private expDivergent = 0;
   private expCustomized = 0;
-  private stageOutSlots: Pool<PoolItem> | null = null;
+  stageOutSlots: Pool<PoolItem> | null = null;
   private stageOutInUse = 0;
   private stageOutMax = 0;
   private readonly expeditionWait: number[] = [];
@@ -254,14 +259,19 @@ export class SimModel {
     this.stageOutStore = new Store<StageToken>(this.sim);
     const loadItem: PoolItem = { id: 0, x: 0, z: 0, busy: false, busyTime: 0, busySince: 0, downTime: 0 };
     this.loadFormLock = new Pool<PoolItem>(this.sim, [loadItem]);
-    this.expSteps = sc.expedition.mode === 'basic' ? [] : effectiveSteps(sc.expedition);
+    if (sc.useCustomProcesses) {
+      this.customOrder = sc.processes.find((p) => p.trigger === 'order');
+      this.customFull = sc.processes.find((p) => p.trigger === 'fullOrder');
+      this.customLoad = sc.processes.find((p) => p.trigger === 'outLoad');
+    }
+    this.expSteps = sc.expedition.mode === 'basic' || this.customLoad ? [] : effectiveSteps(sc.expedition);
     if (this.usesStageOut && w.stagesOut.length) {
       const slots: PoolItem[] = [];
       for (const st of w.stagesOut) for (let i = 0; i < st.capacity; i++) slots.push({ id: slots.length, x: st.pt.x, z: st.pt.z, busy: false, busyTime: 0, busySince: 0, downTime: 0 });
       this.stageOutSlots = new Pool(this.sim, slots);
       this.stageOutSlots.statsFrom = this.warm;
     }
-    if (sc.picking.mode === 'pallet') this.setupPicking();
+    if (sc.picking.mode === 'pallet' || this.customOrder) this.setupPicking();
 
     // ---- estoque inicial ----
     for (const r of w.racks) {
@@ -299,7 +309,7 @@ export class SimModel {
     if (sc.picking.full.ordersPerHour > 0) sim.spawn(this.arrivals(new Array(24).fill(sc.picking.full.ordersPerHour), () => this.orderFull()));
     this.startBreaks();
     this.startTriageClearing();
-    sim.spawn(this.arrivals(sc.ordersPerHour, () => (sc.picking.mode === 'pallet' ? this.orderPallet() : this.order())));
+    sim.spawn(this.arrivals(sc.ordersPerHour, () => (sc.picking.mode === 'pallet' || this.customOrder ? this.orderPallet() : this.order())));
     sim.spawn(this.sampler());
   }
 
@@ -910,7 +920,9 @@ export class SimModel {
       so.waitSec += tDock - tArr;
     }
     yield turnOut;
-    if (this.sc.expedition.mode !== 'basic') {
+    if (this.customLoad) {
+      yield* this.runLoadProcess(this.customLoad, dock, tDock, v.trailerLengthM, this.customLoadSize(v));
+    } else if (this.sc.expedition.mode !== 'basic') {
       yield* this.runExpedition(dock, tDock, v.trailerLengthM, loadPallets(this.sc, v));
     } else {
       const n = this.palletsPerTruck(v.pallets, v.capacityPallets);
@@ -928,7 +940,7 @@ export class SimModel {
   }
 
   private *outboundPallet(dock: DockItem, loaded: Countdown, tDock: number, idx: number, n: number, trailerM: number, gate?: VehicleGate): Process {
-    if (this.sc.picking.loadFrom === 'stage') {
+    if (this.loadsFromStage) {
       yield* this.outboundFromStage(dock, loaded, tDock, idx, n, trailerM, gate);
       return;
     }
@@ -973,12 +985,16 @@ export class SimModel {
   }
 
   /** a carga do caminhão sai do stage de expedição (carga a partir do stage ou expedição por etapas) */
+  private get loadsFromStage(): boolean {
+    return this.sc.picking.loadFrom === 'stage' || !!this.customOrder || !!this.customFull;
+  }
+
   private get usesStageOut(): boolean {
-    return this.sc.picking.loadFrom === 'stage' || this.sc.expedition.mode !== 'basic';
+    return this.loadsFromStage || this.sc.expedition.mode !== 'basic' || !!this.customLoad;
   }
 
   /** ponto do stage de expedição (ou, na falta, a doca de saída / ponto base) */
-  private get stageOutPt(): Pt {
+  get stageOutPt(): Pt {
     const w = this.world;
     return w.stagesOut[0]?.pt ?? w.docksOut[0]?.inner ?? w.home;
   }
@@ -988,13 +1004,22 @@ export class SimModel {
     return routeTravelSec(order, from, back, (a, b) => this.world.nav.distance(a, b), tt);
   }
 
-  /** pedido de picking: caixas por pedido e % A/B/C definidos pelo usuário; dividido entre os separadores por rua */
+  /** pedido de picking: com processo personalizado, o pedido percorre os blocos; senão, a separação padrão */
   private *orderPallet(): Process {
-    const sc = this.sc;
-    const pk = sc.picking;
-    const c = this.c;
     const tArr = this.sim.now;
-    c.ordersArrived++;
+    if (this.customOrder) {
+      this.c.ordersArrived++;
+      yield* runProcess(this, this.customOrder, auxLoad(this, 'carton', 1, 0, undefined, tArr >= this.warm));
+      return;
+    }
+    yield* this.pickOrderCore(this.sc.picking, tArr);
+  }
+
+  /** caixas por pedido e % A/B/C definidos pelo usuário; o pedido é dividido entre os separadores por rua */
+  *pickOrderCore(pk: PickRouteParams, tArr: number, counted = false): Process {
+    const sc = this.sc;
+    const c = this.c;
+    if (!counted && !this.customOrder) c.ordersArrived++;
     const boxes = Math.max(1, Math.round(this.rngPick.normal(pk.boxesPerOrder.mean, pk.boxesPerOrder.sd)));
     const tot = Math.max(1e-9, pk.abc.a + pk.abc.b + pk.abc.c);
     const weights = [pk.abc.a / tot, pk.abc.b / tot, pk.abc.c / tot];
@@ -1013,7 +1038,7 @@ export class SimModel {
     this.world.nav.key(stage);
     const parts = splitAmongPickers(stops, pk.pickersPerOrder);
     const done = new Countdown(this.sim, parts.length);
-    for (const part of parts) this.sim.spawn(this.pickerRoute(part, done, tArr));
+    for (const part of parts) this.sim.spawn(this.pickerRoute(part, done, tArr, pk));
     yield done.signal;
     if (tArr >= this.warm) {
       this.orderCycle.push((this.sim.now - tArr) / 60);
@@ -1033,13 +1058,13 @@ export class SimModel {
   }
 
   /** um palete pronto chegou ao stage de expedição; com conferência simultânea ele só fica disponível depois de conferido */
-  private stageOutArrive(slot: PoolItem | undefined, origin: 'picking' | 'full', boxes: number) {
+  stageOutArrive(slot: PoolItem | undefined, origin: 'picking' | 'full', boxes: number) {
     if (!this.usesStageOut) return;
     this.stageOutInUse++;
     this.stageOutMax = Math.max(this.stageOutMax, this.stageOutInUse);
     const tok: StageToken = { slot, origin, boxes };
     const conf = this.expSteps.find((s): s is ConferenceStep => s.type === 'conference');
-    if (conf && conf.timing === 'simultaneous') this.sim.spawn(this.conferAtStage(tok, conf));
+    if (conf && conf.timing === 'simultaneous' && !this.customLoad) this.sim.spawn(this.conferAtStage(tok, conf));
     else this.stageOutStore.put(tok);
   }
 
@@ -1060,7 +1085,7 @@ export class SimModel {
   }
 
   /** uma pessoa (conferente ou operário) vai ao ponto e trabalha pelo tempo; sem pessoas cadastradas o tempo passa sem recurso */
-  private *personTask(res: ExpPerson, near: Pt, dur: number): Process {
+  *personTask(res: ExpPerson, near: Pt, dur: number): Process {
     const pool = res === 'checker' ? this.checkers : this.workers;
     if (!pool.items.length) {
       yield dur;
@@ -1145,13 +1170,9 @@ export class SimModel {
     done.tick();
   }
 
-  /** expedição por etapas: forma a carga (N paletes) e percorre conferir, batimento, customizar, embarcar, registrar e lacrar */
-  private *runExpedition(dock: DockItem, tDock: number, trailerM: number, loadSize: number): Process {
+  /** forma a carga: um caminhão por vez recolhe seus N paletes do stage de expedição (esperando a separação) */
+  private *formLoad(n: number, measured: boolean): Generator<any, StageToken[], any> {
     const c = this.c;
-    const n = Math.max(1, Math.round(loadSize));
-    const measured = tDock >= this.warm;
-    const stage = this.stageOutPt;
-    // 1) forma a carga: um caminhão por vez recolhe seus N paletes do stage (esperando a separação)
     const t0 = this.sim.now;
     const lock: PoolItem = yield this.loadFormLock.request();
     const tokens: StageToken[] = [];
@@ -1166,6 +1187,123 @@ export class SimModel {
       c.outReq += n;
       this.loadReady.push((this.sim.now - t0) / 60);
     }
+    return tokens;
+  }
+
+  /** paletes da carga no formato de blocos: a capacidade do baú × ocupação, ou a quantidade fixa por carga */
+  private customLoadSize(v: VehicleType): number {
+    const e = this.sc.expedition;
+    return this.sc.vehicleTypes.length ? Math.max(1, Math.round(v.capacityPallets * e.loadOccupancy)) : Math.max(1, Math.round(e.palletsPerLoad));
+  }
+
+  /** uma pessoa (ou equipamento) do tipo escolhido vai ao ponto e trabalha pelo tempo; sem recurso cadastrado o tempo passa livre */
+  *personWork(kinds: ResourceKind[], near: Pt, dur: number): Process {
+    const pools = kinds.map((k) => (k === 'worker' ? this.workers : k === 'checker' ? this.checkers : this.eqPools[k])).filter((p) => p.items.length > 0);
+    if (!pools.length) {
+      yield dur;
+      return;
+    }
+    const pool = this.choosePool(pools);
+    const ag: Agent = yield* this.takeEq(pool, near);
+    yield this.go(ag, near, false);
+    yield dur;
+    ag.tasks++;
+    this.giveEq(pool, ag);
+  }
+
+  /** uma tarefa de pessoa da expedição em blocos: na carga inteira, em cada palete ou em uma parte dos paletes */
+  private *loadTask(st: TaskStep, tokens: StageToken[], dock: DockItem, boarded: boolean, measured: boolean): Process {
+    const near = boarded ? dock.inner : this.stageOutPt;
+    const self = this;
+    if (st.scope === 'eachPallet' || st.scope === 'somePallets') {
+      const chosen = st.scope === 'eachPallet' ? tokens : tokens.filter(() => this.rngPick.next() < st.pct);
+      if (st.scope === 'somePallets' && measured) this.expCustomized += chosen.length;
+      const done = new Countdown(this.sim, chosen.length);
+      for (const tok of chosen) {
+        this.sim.spawn(function* () {
+          const dur = st.perBox && tok.origin === 'picking' ? self.sum(st.perBox, Math.max(1, tok.boxes)) : sampleDist(self.rngSvc, st.time);
+          yield* self.personWork(st.with, st.scope === 'eachPallet' ? self.tokenPt(tok) : self.stageOutPt, dur);
+          tok.checked = true;
+          done.tick();
+        });
+      }
+      yield done.signal;
+      return;
+    }
+    yield* this.personWork(st.with, near, sampleDist(this.rngSvc, st.time));
+    if (st.extraPct > 0 && this.rngPick.next() < st.extraPct) {
+      if (measured) this.expDivergent++;
+      yield* this.personWork(st.with, near, sampleDist(this.rngSvc, st.extraTime));
+    }
+  }
+
+  /** expedição no formato de blocos: percorre os blocos do processo de carga */
+  private *runLoadProcess(def: ProcessDef, dock: DockItem, tDock: number, trailerM: number, n: number): Process {
+    const measured = tDock >= this.warm;
+    const byId = new Map(def.steps.map((x) => [x.id, x]));
+    const go = (id?: string) => (id ? byId.get(id) : undefined);
+    let cur = go(def.steps.find((x) => x.type === 'start')?.next);
+    let tokens: StageToken[] = [];
+    let boarded = false;
+    let closeSec = 0;
+    const span = (k: keyof SimModel['expSpan'], t: number) => {
+      if (measured) this.expSpan[k].push((this.sim.now - t) / 60);
+    };
+    let guard = 0;
+    while (cur && guard++ < 200) {
+      const t = this.sim.now;
+      switch (cur.type) {
+        case 'collect': tokens = yield* this.formLoad(n, measured); cur = go(cur.next); break;
+        case 'task': {
+          yield* this.loadTask(cur, tokens, dock, boarded, measured);
+          if (cur.kpi === 'close') closeSec += this.sim.now - t;
+          else span(cur.kpi, t);
+          cur = go(cur.next);
+          break;
+        }
+        case 'board':
+          if (!boarded && tokens.length) {
+            yield* this.boardLoad(dock, tokens, trailerM, { id: cur.id, type: 'board', enabled: true, with: cur.with }, tDock);
+            boarded = true;
+          }
+          span('board', t);
+          cur = go(cur.next);
+          break;
+        case 'wait': yield sampleDist(this.rngSvc, cur.time); cur = go(cur.next); break;
+        case 'start': cur = go(cur.next); break;
+        default: cur = undefined;
+      }
+    }
+    if (!boarded && tokens.length) yield* this.boardLoad(dock, tokens, trailerM, { id: 'auto', type: 'board', enabled: true, with: ['forklift'] }, tDock);
+    if (measured) {
+      this.expSpan.close.push(closeSec / 60);
+      this.expLoads++;
+    }
+  }
+
+  /** palete full do processo em blocos: cria o item, percorre os blocos e conta a chegada ao stage */
+  private *customFullPallet(tOrder: number, done: Countdown): Process {
+    const fp = this.sc.picking.full;
+    const tot = Math.max(1e-9, fp.abc.a + fp.abc.b + fp.abc.c);
+    const cls = this.rngPick.pick([fp.abc.a / tot, fp.abc.b / tot, fp.abc.c / tot]) as 0 | 1 | 2;
+    yield* runProcess(this, this.customFull!, auxLoad(this, 'pallet', this.skuCartons[0] ?? 60, cls, 'full', tOrder >= this.warm));
+    done.tick();
+  }
+
+  /** o palete full chegou ao stage de expedição (processo em blocos) */
+  deliverFull(slot: PoolItem | undefined, measured: boolean) {
+    this.stageOutArrive(slot, 'full', 0);
+    if (measured) this.fullPallets++;
+  }
+
+  /** expedição por etapas: forma a carga (N paletes) e percorre conferir, batimento, customizar, embarcar, registrar e lacrar */
+  private *runExpedition(dock: DockItem, tDock: number, trailerM: number, loadSize: number): Process {
+    const c = this.c;
+    const n = Math.max(1, Math.round(loadSize));
+    const measured = tDock >= this.warm;
+    const stage = this.stageOutPt;
+    // 1) forma a carga: um caminhão por vez recolhe seus N paletes do stage (esperando a separação)
+    const tokens: StageToken[] = yield* this.formLoad(n, measured);
     // 2) etapas, na ordem; sem etapa de embarque o app embarca no fim com empilhadeira
     let boarded = false;
     let closeSec = 0;
@@ -1212,7 +1350,7 @@ export class SimModel {
     const tOrder = this.sim.now;
     const n = Math.max(1, Math.round(this.rngPick.normal(fp.palletsPerOrder.mean, fp.palletsPerOrder.sd)));
     const done = new Countdown(this.sim, n);
-    for (let i = 0; i < n; i++) this.sim.spawn(this.fullPallet(tOrder, done));
+    for (let i = 0; i < n; i++) this.sim.spawn(this.customFull ? this.customFullPallet(tOrder, done) : this.fullPallet(tOrder, done));
     yield done.signal;
     if (tOrder >= this.warm) {
       this.fullOrders++;
@@ -1306,9 +1444,8 @@ export class SimModel {
   }
 
   /** um separador: percorre sua rota, lê o endereço, pega e coloca as caixas; ao atingir o limite leva o palete ao stage */
-  private *pickerRoute(part: Stop[], done: Countdown, tArr: number): Process {
-    const sc = this.sc;
-    const pk = sc.picking;
+  private *pickerRoute(part: Stop[], done: Countdown, tArr: number, pk: PickRouteParams): Process {
+    const empties = new Set(pk.stockout.addresses);
     const stage = this.stageOutPt;
     const wk: Agent = yield this.workers.request(stage);
     const measured = tArr >= this.warm;
@@ -1347,7 +1484,7 @@ export class SimModel {
       loaded = true;
       yield sampleDist(this.rngSvc, pk.scan); // ler o código de barras do endereço
       // furo de estoque: endereço vazio ao chegar; espera a reposição
-      const empty = pk.stockout.mode === 'positions' ? this.emptyAddr.has(st.pos.label) : pk.stockout.mode === 'pct' ? this.rngPick.next() < pk.stockout.pct : false;
+      const empty = pk.stockout.mode === 'positions' ? empties.has(st.pos.label) : pk.stockout.mode === 'pct' ? this.rngPick.next() < pk.stockout.pct : false;
       if (empty) {
         const lost = Math.max(0, sampleDist(this.rngSvc, pk.stockout.delay));
         yield lost;
@@ -1623,7 +1760,7 @@ export class SimModel {
       pickRouteTimeU: mean(this.pickRouteU),
       pickRouteTimeZigzag: mean(this.pickRouteZ),
       // produtividade pelo tempo trabalhado dos separadores (andar, ler, pegar, colocar, levar ao stage): vem do tempo por caixa
-      boxesPerPickerHour: sc.picking.mode === 'pallet' && this.pickBusySec > 0 ? c.cartons / (this.pickBusySec / 3600) : 0,
+      boxesPerPickerHour: (sc.picking.mode === 'pallet' || !!this.customOrder) && this.pickBusySec > 0 ? c.cartons / (this.pickBusySec / 3600) : 0,
       stockoutPicksPerDay: this.pickStockouts / days,
       stockoutTimeLostPerDay: this.pickStockoutSec / 60 / days,
       fullOrdersPerDay: this.fullOrders / days,

@@ -1,3 +1,5 @@
+import { makeExpStep, type ExpStepType } from './expedition';
+import type { PickingSpec } from './picking';
 import type { Dist, EquipmentKind, Scenario } from './types';
 
 /**
@@ -16,9 +18,9 @@ export const RESOURCE_LABEL: Record<ResourceKind, string> = {
 };
 export const RESOURCE_KINDS: ResourceKind[] = ['forklift', 'palletJack', 'palletTruck', 'amr', 'worker', 'checker'];
 
-export type PlaceKind = 'trailer' | 'dock' | 'stage' | 'transit' | 'triage' | 'rack' | 'area' | 'here';
+export type PlaceKind = 'trailer' | 'dock' | 'stage' | 'stageOut' | 'transit' | 'triage' | 'rack' | 'area' | 'here';
 export const PLACE_LABEL: Record<PlaceKind, string> = {
-  trailer: 'Dentro do veículo', dock: 'Doca', stage: 'Stage', transit: 'Rua (endereço transitório)', triage: 'Área de triagem',
+  trailer: 'Dentro do veículo', dock: 'Doca', stage: 'Stage (recebimento)', stageOut: 'Stage de expedição', transit: 'Rua (endereço transitório)', triage: 'Área de triagem',
   rack: 'Endereço no rack', area: 'Área do layout…', here: 'Onde está agora',
 };
 export interface PlaceRef {
@@ -27,15 +29,35 @@ export interface PlaceRef {
   areaId?: string;
 }
 
-export type StepType = 'start' | 'move' | 'lift' | 'retrieve' | 'palletize' | 'depalletize' | 'separate' | 'check' | 'decide' | 'address' | 'wait' | 'end';
+/** o que dispara o processo */
+export type Trigger = 'unloadPallet' | 'order' | 'fullOrder' | 'outLoad';
+export const TRIGGERS: Trigger[] = ['unloadPallet', 'order', 'fullOrder', 'outLoad'];
+export const TRIGGER_LABEL: Record<Trigger, string> = {
+  unloadPallet: 'Recebimento (cada palete que sai do veículo)',
+  order: 'Separação por palete (cada pedido)',
+  fullOrder: 'Separação de palete full (cada palete do pedido)',
+  outLoad: 'Expedição (cada caminhão de saída)',
+};
+export const TRIGGER_SHORT: Record<Trigger, string> = { unloadPallet: 'Recebimento', order: 'Separação', fullOrder: 'Palete full', outLoad: 'Expedição' };
+
+export type StepType = 'start' | 'move' | 'lift' | 'retrieve' | 'palletize' | 'depalletize' | 'separate' | 'check' | 'decide' | 'address' | 'wait' | 'end' | 'pickRoute' | 'task' | 'collect' | 'board';
+
+/** blocos disponíveis em cada tipo de processo (Início e Fim valem para todos) */
+export const TRIGGER_STEPS: Record<Trigger, StepType[]> = {
+  unloadPallet: ['move', 'lift', 'retrieve', 'palletize', 'depalletize', 'separate', 'check', 'decide', 'address', 'task', 'wait', 'end'],
+  order: ['pickRoute', 'task', 'decide', 'wait', 'end'],
+  fullOrder: ['address', 'lift', 'move', 'check', 'task', 'decide', 'wait', 'end'],
+  outLoad: ['collect', 'task', 'board', 'wait', 'end'],
+};
 
 export const STEP_LABEL: Record<StepType, string> = {
   start: 'Início', move: 'Movimentar', lift: 'Elevar', retrieve: 'Recuperar', palletize: 'Paletizar', depalletize: 'Despaletizar', separate: 'Separar',
   check: 'Conferir', decide: 'Decidir', address: 'Endereçar', wait: 'Aguardar', end: 'Fim',
+  pickRoute: 'Percorrer rota de separação', task: 'Tarefa de pessoa', collect: 'Formar a carga', board: 'Embarcar',
 };
 
 export const STEP_HELP: Record<StepType, string> = {
-  start: 'Dispara o processo para cada palete que sai do veículo de recebimento.',
+  start: 'Dispara o processo (veja o tipo de processo): cada palete que sai do veículo de recebimento, cada pedido, cada palete full ou cada caminhão de saída.',
   move: 'Leva o item de um local a outro com os recursos escolhidos (descarga, levar à triagem, etapa 1…).',
   lift: 'Eleva o palete até a posição do endereço (ou retira dela), levando-o do local atual.',
   retrieve: 'Retira caixas/fardos do palete atual e cria um novo item com elas.',
@@ -47,6 +69,10 @@ export const STEP_HELP: Record<StepType, string> = {
   address: 'Define o endereço de destino (rua + estante + nível) pela regra de armazenagem.',
   wait: 'Aguarda um tempo.',
   end: 'Encerra o item.',
+  pickRoute: 'O pedido é dividido entre os separadores por rua; cada um percorre a rota (U ou zigue-zague), lê o endereço, pega e coloca as caixas e leva cada palete cheio ao Stage de expedição.',
+  task: 'Uma pessoa (conferente ou operário) vai ao local e trabalha pelo tempo: conferir, bater o pedido, customizar paletes, registrar, lacrar… Na expedição escolha se vale para a carga inteira, para cada palete ou para uma parte dos paletes.',
+  collect: 'Forma a carga do caminhão: recolhe do Stage de expedição os paletes da carga (espera a separação entregar).',
+  board: 'Leva cada palete do Stage de expedição ao interior do veículo com os equipamentos escolhidos (um por vez dentro do baú; do fundo para a porta).',
 };
 
 interface Pos {
@@ -74,14 +100,37 @@ export interface DecideStep extends Pos { type: 'decide'; condition: DecideCondi
 export interface AddressStep extends Pos { type: 'address'; mode: 'put' | 'take'; next?: string; /** saída: sem posição */ nextNone?: string }
 export interface WaitStep extends Pos { type: 'wait'; time: Dist; next?: string }
 export interface EndStep extends Pos { type: 'end' }
+/** parâmetros da separação por palete (iniciam iguais aos da aba Separação, mas valem só para este bloco) */
+export type PickRouteParams = Pick<PickingSpec, 'boxesPerOrder' | 'abc' | 'palletLimit' | 'route' | 'pickersPerOrder' | 'scan' | 'pick' | 'place' | 'stockout'>;
+export interface PickRouteStep extends Pos { type: 'pickRoute'; params: PickRouteParams; next?: string }
+/** item: o palete/pedido atual · load: uma vez por carga · eachPallet: cada palete da carga · somePallets: uma fração dos paletes da carga */
+export type TaskScope = 'item' | 'load' | 'eachPallet' | 'somePallets';
+export type TaskKpi = 'conference' | 'reconcile' | 'customize' | 'close';
+export const TASK_SCOPE_LABEL: Record<TaskScope, string> = { item: 'No item atual', load: 'Uma vez por carga', eachPallet: 'Em cada palete da carga', somePallets: 'Em uma parte dos paletes da carga' };
+export const TASK_KPI_LABEL: Record<TaskKpi, string> = { conference: 'conferência', reconcile: 'batimento', customize: 'customização', close: 'fechamento' };
+export interface TaskStep extends Pos {
+  type: 'task'; with: ResourceKind[]; scope: TaskScope; time: Dist;
+  /** palete de picking: tempo por caixa em vez do tempo fixo (palete full usa o tempo fixo) */
+  perBox?: Dist;
+  /** somePallets: parte dos paletes da carga (0–1) */
+  pct: number;
+  /** uma vez por carga: chance de precisar de um tempo extra (divergência) */
+  extraPct: number;
+  extraTime: Dist;
+  /** em qual indicador da expedição o tempo entra */
+  kpi: TaskKpi;
+  next?: string;
+}
+export interface CollectStep extends Pos { type: 'collect'; next?: string }
+export interface BoardLoadStep extends Pos { type: 'board'; with: EquipmentKind[]; next?: string }
 
-export type Step = StartStep | MoveStep | LiftStep | RetrieveStep | PalletizeStep | DepalletizeStep | SeparateStep | CheckStep | DecideStep | AddressStep | WaitStep | EndStep;
+export type Step = StartStep | MoveStep | LiftStep | RetrieveStep | PalletizeStep | DepalletizeStep | SeparateStep | CheckStep | DecideStep | AddressStep | WaitStep | EndStep | PickRouteStep | TaskStep | CollectStep | BoardLoadStep;
 
 export interface ProcessDef {
   id: string;
   name: string;
-  /** o que dispara o processo: cada palete que sai do veículo de recebimento */
-  trigger: 'unloadPallet';
+  /** o que dispara o processo (vale o primeiro da lista para cada tipo) */
+  trigger: Trigger;
   steps: Step[];
 }
 
@@ -132,7 +181,21 @@ export function makeStep(type: StepType, x = 0, y = 0, sc?: Scenario): Step {
     case 'address': return { ...base, type, mode: 'put' };
     case 'wait': return { ...base, type, time: c(30) };
     case 'end': return { ...base, type };
+    case 'pickRoute': return { ...base, type, params: pickParamsOf(sc?.picking) };
+    case 'task': return { ...base, type, with: ['checker'], scope: 'item', time: tri(30, 60, 120), perBox: undefined, pct: 0.3, extraPct: 0, extraTime: tri(300, 600, 1200), kpi: 'close' };
+    case 'collect': return { ...base, type };
+    case 'board': return { ...base, type, with: ['forklift'] };
   }
+}
+
+/** cópia dos parâmetros de separação da configuração (ou do padrão) */
+export function pickParamsOf(p?: PickingSpec): PickRouteParams {
+  const src = p ?? ({
+    boxesPerOrder: { mean: 24, sd: 12 }, abc: { a: 0.7, b: 0.2, c: 0.1 }, palletLimit: { mean: 60, sd: 8 }, route: 'u', pickersPerOrder: 1,
+    scan: c(3), pick: tri(3, 5, 9), place: tri(2, 4, 7), stockout: { mode: 'off', pct: 0.03, addresses: [], delay: tri(120, 300, 900) },
+  } as PickRouteParams);
+  const { boxesPerOrder, abc, palletLimit, route, pickersPerOrder, scan, pick, place, stockout } = src;
+  return JSON.parse(JSON.stringify({ boxesPerOrder, abc, palletLimit, route, pickersPerOrder, scan, pick, place, stockout }));
 }
 
 /* ----------------------------------------------------------------- grafo */
@@ -202,6 +265,8 @@ export function validateProcess(p: ProcessDef): ProcessIssue[] {
       const optional = (q.key === 'nextNone' || q.key === 'extracted' || q.key === 'nextBad') ;
       out.push({ level: optional ? 'aviso' : 'erro', msg: `"${name}": a saída ${q.label ? `"${q.label}" ` : ''}não está ligada${optional ? ' (o item será encerrado ali)' : ''}.`, stepId: s.id });
     }
+    if (s.type !== 'start' && s.type !== 'end' && !TRIGGER_STEPS[p.trigger].includes(s.type)) out.push({ level: 'erro', msg: `"${name}": o bloco "${STEP_LABEL[s.type]}" não existe em processos de ${TRIGGER_SHORT[p.trigger]}.`, stepId: s.id });
+    if ((s.type === 'task' || s.type === 'board') && s.with.length === 0) out.push({ level: 'erro', msg: `"${name}": escolha ao menos um recurso.`, stepId: s.id });
     if (s.type === 'move' && s.with.length === 0) out.push({ level: 'erro', msg: `"${name}": escolha ao menos um recurso.`, stepId: s.id });
     if ((s.type === 'lift' || s.type === 'check' || s.type === 'separate' || s.type === 'retrieve' || s.type === 'palletize' || s.type === 'depalletize') && s.with.length === 0) out.push({ level: 'erro', msg: `"${name}": escolha ao menos um recurso.`, stepId: s.id });
     if (s.type === 'move' && s.to.kind === 'area' && !s.to.areaId) out.push({ level: 'erro', msg: `"${name}": escolha a área de destino.`, stepId: s.id });
@@ -209,16 +274,33 @@ export function validateProcess(p: ProcessDef): ProcessIssue[] {
       out.push({ level: 'aviso', msg: `"${name}": palete movimentado só por pessoas (sem equipamento).`, stepId: s.id });
   }
   if (!p.steps.some((s) => s.type === 'end')) out.push({ level: 'aviso', msg: 'O processo não tem bloco Fim (itens sem saída são encerrados no último bloco).' });
-  // o primeiro movimento deve tirar o palete do veículo, senão o caminhão nunca é liberado
   const first = start ? stepById(p, getPort(start, 'next')) : undefined;
-  if (first && !(first.type === 'move' && first.from.kind === 'trailer')) out.push({ level: 'aviso', msg: 'O primeiro bloco deveria ser "Movimentar" saindo de "Dentro do veículo": é ele que libera o caminhão.', stepId: first.id });
+  if (p.trigger === 'order' && !p.steps.some((s) => s.type === 'pickRoute')) out.push({ level: 'erro', msg: 'Processo de separação sem o bloco "Percorrer rota de separação": nenhum pedido seria separado.' });
+  if (p.trigger === 'fullOrder' && !p.steps.some((s) => s.type === 'move' && s.to.kind === 'stageOut')) out.push({ level: 'erro', msg: 'Processo de palete full sem um "Movimentar" para o Stage de expedição: o palete nunca chegaria à carga.' });
+  if (p.trigger === 'outLoad') {
+    const steps = [...reachable(p)].map((id) => stepById(p, id)!).filter(Boolean);
+    const order = (() => { const o: Step[] = []; let cur = first; let g = 0; while (cur && g++ < 100) { o.push(cur); cur = stepById(p, getPort(cur, 'next')); } return o; })();
+    if (!steps.some((s) => s.type === 'collect')) out.push({ level: 'erro', msg: 'Processo de expedição sem o bloco "Formar a carga": nenhum palete seria recolhido do stage.' });
+    if (!steps.some((s) => s.type === 'board')) out.push({ level: 'erro', msg: 'Processo de expedição sem o bloco "Embarcar": nenhuma carga seria embarcada.' });
+    const bi = order.findIndex((s) => s.type === 'board');
+    const ci = order.findIndex((s) => s.type === 'collect');
+    if (bi >= 0 && ci > bi) out.push({ level: 'erro', msg: 'A carga é formada depois do embarque: coloque "Formar a carga" antes de "Embarcar".' });
+    order.forEach((s, i) => {
+      if (s.type !== 'task') return;
+      if (bi >= 0 && i > bi && s.kpi !== 'close') out.push({ level: 'aviso', msg: `"${s.label || STEP_LABEL.task}": ${TASK_KPI_LABEL[s.kpi]} vem depois do embarque (a regra é conferir e customizar antes de embarcar).`, stepId: s.id });
+      if (bi >= 0 && i < bi && s.kpi === 'close') out.push({ level: 'aviso', msg: `"${s.label || STEP_LABEL.task}": fechamento (registro/lacre) vem antes do embarque.`, stepId: s.id });
+      if (s.scope === 'item') out.push({ level: 'aviso', msg: `"${s.label || STEP_LABEL.task}": na expedição escolha o alcance (carga, cada palete ou parte dos paletes); "No item atual" vale como uma vez por carga.`, stepId: s.id });
+    });
+  }
+  // o primeiro movimento deve tirar o palete do veículo, senão o caminhão nunca é liberado
+  if (p.trigger === 'unloadPallet' && first && !(first.type === 'move' && first.from.kind === 'trailer')) out.push({ level: 'aviso', msg: 'O primeiro bloco deveria ser "Movimentar" saindo de "Dentro do veículo": é ele que libera o caminhão.', stepId: first.id });
   return out;
 }
 
 /* ---------------------------------------------------------------- modelos */
 
-function build(name: string, make: (add: <T extends StepType>(t: T, x: number, y: number) => Step) => void, sc?: Scenario): ProcessDef {
-  const p: ProcessDef = { id: `p${Date.now().toString(36)}${(seq++).toString(36)}`, name, trigger: 'unloadPallet', steps: [] };
+function build(name: string, make: (add: <T extends StepType>(t: T, x: number, y: number) => Step) => void, sc?: Scenario, trigger: Trigger = 'unloadPallet'): ProcessDef {
+  const p: ProcessDef = { id: `p${Date.now().toString(36)}${(seq++).toString(36)}`, name, trigger, steps: [] };
   make((t, x, y) => addStep(p, t, x, y, sc));
   return p;
 }
@@ -227,6 +309,7 @@ const link = (a: Step, b: Step, port: Port['key'] = 'next') => setPort(a, port, 
 
 export interface ProcessTemplate {
   id: string;
+  trigger: Trigger;
   name: string;
   description: string;
   make: (sc?: Scenario) => ProcessDef;
@@ -243,6 +326,7 @@ const triageWith: ResourceKind[] = ['palletJack', 'palletTruck', 'amr', 'forklif
 export const PROCESS_TEMPLATES: ProcessTemplate[] = [
   {
     id: 'rec-direto',
+    trigger: 'unloadPallet',
     name: 'Recebimento direto (sem conferência)',
     description: 'Descarrega o palete na doca, define o endereço e a empilhadeira o guarda.',
     make: (sc) => build('Recebimento direto', (add) => {
@@ -260,6 +344,7 @@ export const PROCESS_TEMPLATES: ProcessTemplate[] = [
   },
   {
     id: 'rec-conf-direta',
+    trigger: 'unloadPallet',
     name: 'Recebimento com conferência e triagem (armazenagem direta)',
     description: 'Descarrega no stage, confere, separa as caixas avariadas em outro palete (levado à triagem) e guarda o palete bom.',
     make: (sc) => build('Recebimento com conferência', (add) => {
@@ -280,6 +365,7 @@ export const PROCESS_TEMPLATES: ProcessTemplate[] = [
   },
   {
     id: 'rec-conf-faseada',
+    trigger: 'unloadPallet',
     name: 'Recebimento com conferência e triagem (armazenagem faseada)',
     description: 'Como o anterior, mas o palete bom vai primeiro à rua do destino (etapa 1, sem elevação) e depois a empilhadeira eleva (etapa 2).',
     make: (sc) => build('Recebimento faseado', (add) => {
@@ -299,6 +385,106 @@ export const PROCESS_TEMPLATES: ProcessTemplate[] = [
       link(s, m1); link(m1, ck); link(ck, sp); link(sp, ad); link(ad, m3); link(m3, lf); link(lf, e1); link(ad, e1, 'nextNone');
       link(sp, m2, 'nextBad'); link(m2, e2);
     }, sc),
+  },
+  {
+    id: 'sep-palete',
+    trigger: 'order',
+    name: 'Separação por palete (rota em U ou zigue-zague)',
+    description: 'Cada pedido vira rotas de separadores (por rua) que leem o endereço, pegam e colocam as caixas e levam cada palete cheio ao stage de expedição. Parâmetros iniciais: os da aba Separação.',
+    make: (sc) => build('Separação por palete', (add) => {
+      const s = add('start', 40, 40);
+      const r = add('pickRoute', 40, 150);
+      const e = add('end', 40, 280);
+      link(s, r); link(r, e);
+    }, sc, 'order'),
+  },
+  {
+    id: 'full-direta',
+    trigger: 'fullOrder',
+    name: 'Palete full direto (empilhadeira do endereço ao stage)',
+    description: 'Escolhe o endereço pela curva ABC, a empilhadeira retira o palete e o leva ao stage de expedição.',
+    make: (sc) => build('Palete full direto', (add) => {
+      const s = add('start', 40, 40);
+      const ad = add('address', 40, 150) as AddressStep;
+      ad.mode = 'take';
+      const lf = add('lift', 40, 270) as LiftStep;
+      lf.direction = 'take'; lf.with = ['forklift'];
+      const m = add('move', 40, 390) as MoveStep;
+      m.from = { kind: 'here' }; m.to = { kind: 'stageOut' }; m.with = ['forklift']; m.handling = { kind: 'constant', a: 0 };
+      const e = add('end', 40, 520);
+      link(s, ad); link(ad, lf); link(lf, m); link(m, e); link(ad, e, 'nextNone');
+    }, sc, 'fullOrder'),
+  },
+  {
+    id: 'full-faseada',
+    trigger: 'fullOrder',
+    name: 'Palete full faseado (rua + equipamento sem elevação)',
+    description: 'A empilhadeira baixa o palete na rua (endereço transitório) e a paleteira/transpaleteira/AMR o leva ao stage de expedição.',
+    make: (sc) => build('Palete full faseado', (add) => {
+      const s = add('start', 40, 40);
+      const ad = add('address', 40, 150) as AddressStep;
+      ad.mode = 'take';
+      const lf = add('lift', 40, 270) as LiftStep;
+      lf.direction = 'take'; lf.with = ['forklift'];
+      const m1 = add('move', 40, 390) as MoveStep;
+      m1.from = { kind: 'here' }; m1.to = { kind: 'transit' }; m1.with = ['forklift']; m1.handling = { kind: 'constant', a: 0 };
+      const m2 = add('move', 40, 520) as MoveStep;
+      const movers = (sc?.picking.full.step1With ?? ['palletTruck', 'palletJack', 'amr']).filter((k) => k !== 'forklift');
+      m2.from = { kind: 'here' }; m2.to = { kind: 'stageOut' }; m2.with = movers.length ? [...movers] : ['palletTruck', 'palletJack', 'amr']; m2.handling = { kind: 'constant', a: 0 };
+      const e = add('end', 40, 650);
+      link(s, ad); link(ad, lf); link(lf, m1); link(m1, m2); link(m2, e); link(ad, e, 'nextNone');
+    }, sc, 'fullOrder'),
+  },
+  {
+    id: 'exp-padrao',
+    trigger: 'outLoad',
+    name: 'Expedição padrão (conferir, bater, customizar, embarcar, registrar, lacrar)',
+    description: 'Forma a carga no stage, confere cada palete, faz o batimento com o pedido, customiza paletes de picking, embarca, registra e lacra. Tempos iniciais: os da aba Expedição.',
+    make: (sc) => build('Expedição padrão', (add) => {
+      const ex = (t: ExpStepType) => sc?.expedition.steps.find((x) => x.type === t) ?? makeExpStep(t);
+      const who = (r?: string): ResourceKind[] => [r === 'worker' ? 'worker' : 'checker'];
+      const s = add('start', 40, 40);
+      const co = add('collect', 40, 150);
+      const cf = add('task', 40, 270) as TaskStep;
+      const cfg = ex('conference');
+      cf.label = 'Conferir cada palete'; cf.scope = 'eachPallet'; cf.kpi = 'conference';
+      if (cfg.type === 'conference') { cf.with = who(cfg.resource); cf.time = { ...cfg.fullTime }; cf.perBox = { ...cfg.perBox }; }
+      const rc = add('task', 40, 400) as TaskStep;
+      const rcg = ex('reconcile');
+      rc.label = 'Batimento (pedido × separado)'; rc.scope = 'load'; rc.kpi = 'reconcile';
+      if (rcg.type === 'reconcile') { rc.with = who(rcg.resource); rc.time = { ...rcg.time }; rc.extraPct = rcg.divergencePct; rc.extraTime = { ...rcg.correctionTime }; }
+      const cu = add('task', 40, 530) as TaskStep;
+      const cug = ex('customize');
+      cu.label = 'Customizar paletes'; cu.scope = 'somePallets'; cu.kpi = 'customize';
+      if (cug.type === 'customize') { cu.with = who(cug.resource); cu.time = { ...cug.time }; cu.pct = cug.pickPct; }
+      const bd = add('board', 40, 660) as BoardLoadStep;
+      const bdg = ex('board');
+      if (bdg.type === 'board' && bdg.with.length) bd.with = [...bdg.with];
+      const rg = add('task', 40, 790) as TaskStep;
+      const rgg = ex('register');
+      rg.label = 'Registro documental e sistêmico'; rg.scope = 'load'; rg.kpi = 'close';
+      if (rgg.type === 'register') { rg.with = who(rgg.resource); rg.time = { ...rgg.time }; }
+      const sl = add('task', 40, 920) as TaskStep;
+      const slg = ex('seal');
+      sl.label = 'Lacrar o baú'; sl.scope = 'load'; sl.kpi = 'close';
+      if (slg.type === 'seal') { sl.with = who(slg.resource); sl.time = { ...slg.time }; }
+      const e = add('end', 40, 1050);
+      link(s, co); link(co, cf); link(cf, rc); link(rc, cu); link(cu, bd); link(bd, rg); link(rg, sl); link(sl, e);
+    }, sc, 'outLoad'),
+  },
+  {
+    id: 'exp-simples',
+    trigger: 'outLoad',
+    name: 'Expedição simples (formar a carga e embarcar)',
+    description: 'Forma a carga com os paletes do stage e embarca com os equipamentos escolhidos, sem etapas de conferência.',
+    make: (sc) => build('Expedição simples', (add) => {
+      const s = add('start', 40, 40);
+      const co = add('collect', 40, 150);
+      const bd = add('board', 40, 270) as BoardLoadStep;
+      bd.with = sc?.picking.loadWith.length ? [...sc.picking.loadWith] : ['forklift'];
+      const e = add('end', 40, 400);
+      link(s, co); link(co, bd); link(bd, e);
+    }, sc, 'outLoad'),
   },
 ];
 
@@ -339,4 +525,5 @@ export function autoLayout(p: ProcessDef, dx = 260, dy = 130, x0 = 40, y0 = 40) 
 export const STEP_COLOR: Record<StepType, string> = {
   start: '#34d399', end: '#94a3b8', move: '#38bdf8', lift: '#a78bfa', retrieve: '#f59e0b', palletize: '#fb923c', depalletize: '#fb923c',
   separate: '#f472b6', check: '#facc15', decide: '#60a5fa', address: '#2dd4bf', wait: '#cbd5e1',
+  pickRoute: '#fb7185', task: '#c084fc', collect: '#4ade80', board: '#22d3ee',
 };

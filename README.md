@@ -73,7 +73,16 @@ Em vez de ações "de recebimento" ou "de triagem", o app tem **ações genéric
 
 Locais: dentro do veículo, doca, stage, rua (endereço transitório), triagem, endereço no rack, qualquer área do layout ou "onde está agora". Stage, rua e triagem têm capacidade: o item reserva espaço antes de pegar recurso e espera se estiver cheio. Há **modelos prontos** (recebimento direto; com conferência e triagem; faseado) já preenchidos com a configuração atual, e a aba **Processos** da planilha guarda os blocos.
 
-Com *Usar o processo personalizado* ativo, o primeiro processo da lista conduz cada palete que sai do veículo de recebimento, no lugar do fluxo padrão. Separação e expedição continuam como estão (ainda não são processos editáveis), e a análise analítica continua modelando o fluxo padrão (aviso na aba Dimensionar).
+Com *Usar os processos personalizados* ativo, vale o **primeiro processo da lista de cada tipo**, no lugar do fluxo padrão; tipos sem processo seguem o padrão. Os quatro tipos de processo:
+
+| Tipo | Dispara em | Blocos próprios |
+| --- | --- | --- |
+| Recebimento | cada palete que sai do veículo | movimentar, elevar, conferir, separar avariados, endereçar… |
+| Separação por palete | cada pedido | **Percorrer rota de separação** (rota em U/zigue-zague, separadores por pedido, caixas por pedido, limite de palete, curvas ABC, leitura/pegar/colocar, furos de estoque) |
+| Palete full | cada palete de um pedido full | endereçar (retirar), elevar (retirar), movimentar até o **Stage de expedição** (direto ou via rua + equipamento sem elevação) |
+| Expedição | cada caminhão de saída | **Formar a carga**, **Tarefa de pessoa** (conferir cada palete, batimento com divergência, customizar uma parte dos paletes, registrar, lacrar…), **Embarcar** |
+
+Modelos prontos reproduzem os formatos padrão (os resultados da separação em blocos são idênticos aos do padrão com a mesma semente). Processos de separação/palete full entregam ao stage de expedição, então o caminhão passa a carregar a partir do stage. Na expedição em blocos a conferência é sempre "depois da carga formada" (a simultânea do formato padrão não existe em blocos). A análise analítica continua modelando o fluxo padrão (aviso na aba Dimensionar); a planilha `Processos` guarda o tipo (`Gatilho`) e os parâmetros de cada bloco.
 
 ## Planilha Excel
 

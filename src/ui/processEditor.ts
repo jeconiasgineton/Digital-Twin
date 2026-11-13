@@ -1,7 +1,7 @@
 import { distMean } from '../math/rng';
 import {
-  ITEM_LABEL, PLACE_LABEL, RESOURCE_KINDS, RESOURCE_LABEL, STEP_COLOR, STEP_HELP, STEP_LABEL, addStep, autoLayout, connect, getPort, portsOf, removeStep, stepById,
-  validateProcess, type PlaceKind, type PlaceRef, type ProcessDef, type ResourceKind, type Step, type StepType,
+  ITEM_LABEL, PLACE_LABEL, RESOURCE_KINDS, RESOURCE_LABEL, STEP_COLOR, STEP_HELP, STEP_LABEL, TASK_KPI_LABEL, TASK_SCOPE_LABEL, TRIGGER_LABEL, TRIGGER_STEPS, addStep, autoLayout, connect, getPort, portsOf, removeStep, stepById,
+  validateProcess, type PlaceKind, type PlaceRef, type TaskKpi, type TaskScope, type ProcessDef, type ResourceKind, type Step, type StepType,
 } from '../model/process';
 import type { Dist, DistKind } from '../model/types';
 import type { AppCtx } from './ctx';
@@ -19,7 +19,6 @@ function svg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string,
   return el;
 }
 
-const PALETTE: StepType[] = ['move', 'lift', 'retrieve', 'palletize', 'depalletize', 'separate', 'check', 'decide', 'address', 'wait', 'end'];
 
 /* ----------------------------------------------------------- resumos */
 
@@ -31,7 +30,7 @@ function placeText(ref: PlaceRef, ctx: AppCtx): string {
 const resText = (w: ResourceKind[]) => (w.length ? w.map((r) => RESOURCE_LABEL[r]).join(' / ') : 'sem recurso');
 const sec = (d: Dist) => `${distMean(d).toFixed(0)} s`;
 
-function summary(s: Step, ctx: AppCtx): [string, string] {
+function summary(s: Step, ctx: AppCtx, def: ProcessDef): [string, string] {
   switch (s.type) {
     case 'move': return [`${ITEM_LABEL[s.item]}: ${placeText(s.from, ctx)} → ${placeText(s.to, ctx)}`, `${resText(s.with)} · ${sec(s.handling)}`];
     case 'lift': return [s.direction === 'put' ? 'Guardar no endereço (elevar)' : 'Retirar do endereço', `${resText(s.with)} · ${sec(s.handling)}`];
@@ -43,7 +42,11 @@ function summary(s: Step, ctx: AppCtx): [string, string] {
     case 'decide': return [s.condition === 'damaged' ? 'Está avariado?' : s.condition === 'wholeDamaged' ? 'Todo avariado?' : s.condition === 'prob' ? `Sorteio ${(s.value * 100).toFixed(0)}%` : `Mais de ${s.value} itens?`, ''];
     case 'address': return [s.mode === 'put' ? 'Reservar posição (regra ABC)' : 'Escolher posição a retirar', ''];
     case 'wait': return ['Aguardar', sec(s.time)];
-    case 'start': return ['Cada palete que sai do veículo', ''];
+    case 'start': return [TRIGGER_LABEL[def.trigger].replace(/ \(.*\)$/, '') + ':', TRIGGER_LABEL[def.trigger].match(/\((.*)\)/)?.[1] ?? ''];
+    case 'pickRoute': return [`${s.params.route === 'u' ? 'Rota em U' : 'Zigue-zague'} · ${s.params.pickersPerOrder} separador(es)`, `${s.params.boxesPerOrder.mean.toFixed(0)} caixas/pedido · palete ${s.params.palletLimit.mean.toFixed(0)} cx`];
+    case 'task': return [`${TASK_SCOPE_LABEL[s.scope]}${s.scope === 'somePallets' ? ` (${Math.round(s.pct * 100)}%)` : ''}`, `${resText(s.with)} · ${sec(s.time)}${s.extraPct > 0 ? ` · +${Math.round(s.extraPct * 100)}% extra` : ''}`];
+    case 'collect': return ['Recolhe os paletes da carga do stage', ''];
+    case 'board': return ['Leva os paletes ao veículo', resText(s.with)];
     case 'end': return ['Encerra o item', ''];
   }
 }
@@ -96,11 +99,11 @@ function resourceEditor(label: string, get: () => ResourceKind[], set: (r: Resou
     } }), RESOURCE_LABEL[k]))));
 }
 
-function inspector(s: Step, ctx: AppCtx, redraw: () => void, remove: () => void): HTMLElement {
+function inspector(s: Step, ctx: AppCtx, def: ProcessDef, redraw: () => void, remove: () => void): HTMLElement {
   const f: HTMLElement[] = [h('p', { class: 'note' }, STEP_HELP[s.type]), textField('Nome do bloco (opcional)', () => s.label ?? '', (v) => { s.label = v.trim() || undefined; redraw(); })];
   const ch = () => ctx.scenarioChanged();
   const dist = (label: string, key: string) => f.push(distEditor(label, () => (s as any)[key], (d) => { (s as any)[key] = d; ch(); }, redraw));
-  const all: PlaceKind[] = ['trailer', 'dock', 'stage', 'transit', 'triage', 'rack', 'area', 'here'];
+  const all: PlaceKind[] = ['trailer', 'dock', 'stage', 'stageOut', 'transit', 'triage', 'rack', 'area', 'here'];
   switch (s.type) {
     case 'move':
       f.push(
@@ -158,6 +161,49 @@ function inspector(s: Step, ctx: AppCtx, redraw: () => void, remove: () => void)
       break;
     case 'address':
       f.push(selField('Ação', () => s.mode, (v) => { s.mode = v; ch(); redraw(); }, [['put', 'Reservar posição livre para guardar'], ['take', 'Escolher posição ocupada para retirar']]));
+      break;
+    case 'pickRoute': {
+      const pr = s.params;
+      f.push(
+        selField('Rota', () => pr.route, (v) => { pr.route = v; ch(); redraw(); }, [['u', 'Em U (um lado na ida, o outro na volta)'], ['zigzag', 'Zigue-zague (caixa mais próxima)']]),
+        numField('Separadores por pedido', () => pr.pickersPerOrder, (v) => { pr.pickersPerOrder = Math.max(1, Math.round(v)); ch(); redraw(); }, { step: 1, min: 1 }),
+        numField('Caixas por pedido (média)', () => pr.boxesPerOrder.mean, (v) => { pr.boxesPerOrder = { ...pr.boxesPerOrder, mean: Math.max(1, v) }; ch(); redraw(); }, { step: 1, min: 1 }),
+        numField('Caixas por pedido (desvio)', () => pr.boxesPerOrder.sd, (v) => { pr.boxesPerOrder = { ...pr.boxesPerOrder, sd: Math.max(0, v) }; ch(); }, { step: 1, min: 0 }),
+        numField('Limite por palete (média, caixas)', () => pr.palletLimit.mean, (v) => { pr.palletLimit = { ...pr.palletLimit, mean: Math.max(1, v) }; ch(); redraw(); }, { step: 1, min: 1 }),
+        numField('Limite por palete (desvio)', () => pr.palletLimit.sd, (v) => { pr.palletLimit = { ...pr.palletLimit, sd: Math.max(0, v) }; ch(); }, { step: 1, min: 0 }),
+        numField('Curva A (% das caixas)', () => pr.abc.a * 100, (v) => { pr.abc = { ...pr.abc, a: Math.max(0, v) / 100 }; ch(); }, { step: 5, min: 0, unit: '%' }),
+        numField('Curva B (% das caixas)', () => pr.abc.b * 100, (v) => { pr.abc = { ...pr.abc, b: Math.max(0, v) / 100 }; ch(); }, { step: 5, min: 0, unit: '%' }),
+        numField('Curva C (% das caixas)', () => pr.abc.c * 100, (v) => { pr.abc = { ...pr.abc, c: Math.max(0, v) / 100 }; ch(); }, { step: 5, min: 0, unit: '%' }),
+      );
+      f.push(distEditor('Ler o código do endereço (s)', () => pr.scan, (d) => { pr.scan = d; ch(); }, redraw), distEditor('Pegar uma caixa (s)', () => pr.pick, (d) => { pr.pick = d; ch(); }, redraw), distEditor('Colocar uma caixa no palete (s)', () => pr.place, (d) => { pr.place = d; ch(); }, redraw));
+      f.push(
+        selField('Furo de estoque', () => pr.stockout.mode, (v) => { pr.stockout = { ...pr.stockout, mode: v }; ch(); redraw(); }, [['off', 'Desligado'], ['pct', 'Percentual aleatório'], ['positions', 'Endereços específicos (aba Separação)']]),
+      );
+      if (pr.stockout.mode === 'pct') f.push(numField('Chance de endereço vazio', () => pr.stockout.pct * 100, (v) => { pr.stockout = { ...pr.stockout, pct: Math.min(1, Math.max(0, v / 100)) }; ch(); }, { step: 0.5, min: 0, max: 100, unit: '%' }));
+      if (pr.stockout.mode !== 'off') f.push(distEditor('Tempo até a reposição (s)', () => pr.stockout.delay, (d) => { pr.stockout = { ...pr.stockout, delay: d }; ch(); }, redraw));
+      f.push(h('p', { class: 'note' }, 'A área de picking (chão, faces marcadas ou endereços) continua sendo a da aba Separação. Os separadores são os operários.'));
+      break;
+    }
+    case 'task': {
+      const exp = def.trigger === 'outLoad';
+      f.push(resourceEditor('Quem faz', () => s.with, (r) => { s.with = r; ch(); }, redraw, ['checker', 'worker']));
+      if (exp) f.push(selField('Alcance', () => s.scope, (v) => { s.scope = v as TaskScope; ch(); redraw(); }, (['load', 'eachPallet', 'somePallets'] as const).map((k) => [k, TASK_SCOPE_LABEL[k]] as [string, string])));
+      if (exp && s.scope === 'somePallets') f.push(numField('Parte dos paletes da carga', () => s.pct * 100, (v) => { s.pct = Math.min(1, Math.max(0, v / 100)); ch(); redraw(); }, { step: 5, min: 0, max: 100, unit: '%' }));
+      dist(exp && s.scope === 'eachPallet' ? 'Tempo por palete (s) — palete full e quando não há tempo por caixa' : 'Tempo (s)', 'time');
+      if ((exp && s.scope === 'eachPallet') || (!exp && s.scope === 'item')) {
+        const perBox = s.perBox ?? { kind: 'constant' as const, a: 0 };
+        f.push(distEditor('Tempo por caixa (s) — palete de picking; 0 usa o tempo fixo', () => s.perBox ?? perBox, (d) => { s.perBox = distMean(d) > 0 ? d : undefined; ch(); }, redraw));
+      }
+      if (!exp || s.scope === 'load') {
+        f.push(numField('Chance de tempo extra (divergência)', () => s.extraPct * 100, (v) => { s.extraPct = Math.min(1, Math.max(0, v / 100)); ch(); redraw(); }, { step: 5, min: 0, max: 100, unit: '%' }));
+        if (s.extraPct > 0) dist('Tempo extra (s)', 'extraTime');
+      }
+      if (exp) f.push(selField('Entra no indicador de', () => s.kpi, (v) => { s.kpi = v as TaskKpi; ch(); }, (['conference', 'reconcile', 'customize', 'close'] as const).map((k) => [k, TASK_KPI_LABEL[k]] as [string, string])));
+      break;
+    }
+    case 'board':
+      f.push(resourceEditor('Com quê (o disponível é acionado)', () => s.with, (r) => { s.with = r as typeof s.with; ch(); }, redraw, ['forklift', 'palletJack', 'palletTruck', 'amr']));
+      f.push(h('p', { class: 'note' }, 'O tempo de colocar cada palete no baú é o "Colocar palete no veículo" das operações.'));
       break;
     case 'wait':
       dist('Tempo (s)', 'time');
@@ -217,7 +263,7 @@ export function openProcessEditor(ctx: AppCtx, def: ProcessDef, onClose: () => v
     const s = stepById(def, selStep);
     insBox.replaceChildren(
       h('b', null, s ? STEP_LABEL[s.type] : 'Nenhum bloco selecionado'),
-      s ? inspector(s, ctx, draw, () => { removeStep(def, s.id); selStep = undefined; ctx.scenarioChanged(); draw(); }) : h('p', { class: 'note' }, 'Clique num bloco para editar. Arraste um bloco para movê-lo; arraste da bolinha de saída até outro bloco para ligar. Selecione uma seta e tecle Delete para desligar.'),
+      s ? inspector(s, ctx, def, draw, () => { removeStep(def, s.id); selStep = undefined; ctx.scenarioChanged(); draw(); }) : h('p', { class: 'note' }, 'Clique num bloco para editar. Arraste um bloco para movê-lo; arraste da bolinha de saída até outro bloco para ligar. Selecione uma seta e tecle Delete para desligar.'),
     );
   };
 
@@ -241,7 +287,7 @@ export function openProcessEditor(ctx: AppCtx, def: ProcessDef, onClose: () => v
     }
     // blocos
     for (const s of def.steps) {
-      const [t1, t2] = summary(s, ctx);
+      const [t1, t2] = summary(s, ctx, def);
       const color = STEP_COLOR[s.type];
       const sel = selStep === s.id;
       const node = svg('g', { transform: `translate(${s.x},${s.y})`, style: 'cursor:grab' });
@@ -379,7 +425,7 @@ export function openProcessEditor(ctx: AppCtx, def: ProcessDef, onClose: () => v
 
   const palette = h('div', { class: 'pe-palette' },
     h('b', null, 'Ações'),
-    ...PALETTE.map((t) => h('button', { class: 'b pe-act', title: STEP_HELP[t], onclick: () => {
+    ...TRIGGER_STEPS[def.trigger].map((t) => h('button', { class: 'b pe-act', title: STEP_HELP[t], onclick: () => {
       const r = canvas.getBoundingClientRect();
       const x = (r.width / 2 - view.x) / view.k - NW / 2 + (def.steps.length % 5) * 14;
       const y = (r.height / 3 - view.y) / view.k + (def.steps.length % 5) * 14;

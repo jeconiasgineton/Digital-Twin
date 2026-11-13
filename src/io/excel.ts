@@ -5,7 +5,7 @@ import { defaultEquipment, normalizeEquipment } from '../model/equipment';
 import { PEOPLE_ROLES } from '../model/traffic';
 import { parseAddresses } from '../model/picking';
 import { EXP_LABEL, type ExpStep, type ExpStepType } from '../model/expedition';
-import { STEP_LABEL, portsOf, type ProcessDef, type Step, type StepType } from '../model/process';
+import { STEP_LABEL, TRIGGERS, portsOf, type ProcessDef, type Step, type StepType, type Trigger } from '../model/process';
 import { defaultLayoutParams, generateLayout, newId, type LayoutParams } from '../model/layoutGen';
 import { linearEnds, toWorld } from '../math/spatial';
 
@@ -420,14 +420,16 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     const procs = new Map<string, ProcessDef>();
     for (const r of table(wsPr).rows) {
       const pid = String(pick(r, 'processo_id', 'processo') ?? '').trim();
-      const type = norm(pick(r, 'tipo')) as StepType;
+      const rawType = norm(pick(r, 'tipo'));
+      const type = ((Object.keys(STEP_LABEL) as StepType[]).find((k) => k.toLowerCase() === rawType) ?? rawType) as StepType;
       if (!pid || !(type in STEP_LABEL)) {
         if (pid) warn(`Processos: tipo de bloco "${pick(r, 'tipo')}" desconhecido.`);
         continue;
       }
       let def = procs.get(pid);
       if (!def) {
-        def = { id: pid, name: String(pick(r, 'nome_processo', 'nome') ?? pid), trigger: 'unloadPallet', steps: [] };
+        const g = String(pick(r, 'gatilho') ?? 'unloadPallet').trim();
+        def = { id: pid, name: String(pick(r, 'nome_processo', 'nome') ?? pid), trigger: (TRIGGERS as string[]).includes(g) ? (g as Trigger) : 'unloadPallet', steps: [] };
         procs.set(pid, def);
       }
       let extra: Record<string, unknown> = {};
@@ -716,7 +718,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['furo_modo', sc.picking.stockout.mode === 'positions' ? 'posicoes' : sc.picking.stockout.mode === 'pct' ? 'percentual' : 'off', 'Furo de estoque: off | percentual | posicoes'],
     ['furo_pct', sc.picking.stockout.pct, 'Furo por percentual: probabilidade de o endereço estar vazio ao chegar'],
     ['furo_enderecos', sc.picking.stockout.addresses.join(', '), 'Furo por posições: endereços vazios (ex.: A015, B023)'],
-    ['processos_personalizados', sc.useCustomProcesses ? 'S' : 'N', 'S = o primeiro processo da aba Processos conduz cada palete do recebimento (blocos de ações genéricas)'],
+    ['processos_personalizados', sc.useCustomProcesses ? 'S' : 'N', 'S = vale o primeiro processo de cada tipo (recebimento, separação, palete full, expedição) da aba Processos'],
     ['limite_espera_doca_min', sc.dockWaitThresholdMin, 'Espera na doca acima da qual o caminhão conta como gargalo (min)'],
     ['amr_trabalha_intervalos', sc.calendar.amrWorksDuringBreaks ? 'S' : 'N', 'S = AMR continuam trabalhando nos intervalos das pessoas'],
     ...(['entrada', 'saida'] as const).flatMap((dir): [string, any, string][] => {
@@ -750,7 +752,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   styleHeader(ex);
 
   const pr = wb.addWorksheet('Processos');
-  pr.columns = ['Processo_Id', 'Nome_Processo', 'Bloco_Id', 'Tipo', 'X', 'Y', 'Rotulo', 'Saidas', 'Parametros'].map((h) => ({ header: h, width: h === 'Parametros' || h === 'Saidas' ? 60 : 18 }));
+  pr.columns = ['Processo_Id', 'Nome_Processo', 'Gatilho', 'Bloco_Id', 'Tipo', 'X', 'Y', 'Rotulo', 'Saidas', 'Parametros'].map((h) => ({ header: h, width: h === 'Parametros' || h === 'Saidas' ? 60 : 18 }));
   for (const p of sc.processes ?? [])
     for (const s of p.steps) {
       const outs: Record<string, string> = {};
@@ -760,7 +762,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
       }
       const { id: _i, type: _t, x: _x, y: _y, label: _l, next: _n, nextBad: _b, nextNo: _o, extracted: _e, nextNone: _z, ...rest } = s as unknown as Record<string, unknown>;
       void [_i, _t, _x, _y, _l, _n, _b, _o, _e, _z];
-      pr.addRow([p.id, p.name, s.id, s.type, Math.round(s.x), Math.round(s.y), s.label ?? null, JSON.stringify(outs), JSON.stringify(rest)]);
+      pr.addRow([p.id, p.name, p.trigger, s.id, s.type, Math.round(s.x), Math.round(s.y), s.label ?? null, JSON.stringify(outs), JSON.stringify(rest)]);
     }
   styleHeader(pr);
 

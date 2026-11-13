@@ -2,7 +2,7 @@ import type { Pt } from '../math/spatial';
 import { sampleDist } from '../math/rng';
 import {
   getPort, type CheckStep, type DecideStep, type ItemKind, type LiftStep, type MoveStep, type PlaceRef, type ProcessDef, type ResourceKind,
-  type RetrieveStep, type SeparateStep, type Step,
+  type RetrieveStep, type SeparateStep, type Step, type TaskStep,
 } from '../model/process';
 import { trailerDepthM } from '../model/receiving';
 import { Countdown, type Pool, type PoolItem, type Process, type VehicleGate } from './engine';
@@ -19,6 +19,8 @@ export interface PlaceState {
   pt: Pt;
   /** libera o espaço reservado (stage, rua…) quando o item sai do local */
   hold?: () => void;
+  /** vaga reservada no stage de expedição (liberada no embarque) */
+  slot?: PoolItem;
 }
 
 export interface Dest {
@@ -56,6 +58,8 @@ export interface Load {
   /** item original do gatilho (os derivados de Separar/Recuperar não contam como novos paletes) */
   root: boolean;
   place: PlaceState;
+  /** palete full ou de picking (decide como o stage de expedição o confere) */
+  origin?: 'picking' | 'full';
   dest?: Dest;
   ctx: LoadCtx;
   /** passou por um endereço transitório (armazenagem faseada) */
@@ -106,6 +110,11 @@ function* reserveSpace(m: SimModel, load: Load, ref: PlaceRef): Generator<any, P
       if (area && !overflow) area.occupied++;
       return { ref, pt: area ? area.pt : load.place.pt };
     }
+    case 'stageOut': {
+      if (!m.stageOutSlots) return { ref, pt: m.stageOutPt };
+      const slot: PoolItem = yield m.stageOutSlots.request(load.place.pt);
+      return { ref, pt: { x: slot.x, z: slot.z }, slot };
+    }
     case 'dock':
     case 'trailer':
       return { ref, pt: ctx.dock.inner };
@@ -144,6 +153,7 @@ function* doMove(m: SimModel, load: Load, st: MoveStep): Process {
   ag.tasks++;
   m.giveEq(pool, ag);
   load.place = dest;
+  if (st.to.kind === 'stageOut') m.deliverFull(dest.slot, load.ctx.measured);
 }
 
 /** subida e descida do garfo até o nível + o tempo de posicionamento configurado no bloco */
@@ -310,6 +320,24 @@ function finish(m: SimModel, load: Load) {
   if (load.root) m.c.palletsDone++;
 }
 
+/** Tarefa de pessoa no item atual: vai ao local e trabalha pelo tempo (com divergência opcional) */
+function* doTask(m: SimModel, load: Load, st: TaskStep): Process {
+  let t = sampleDist(m.rngSvc, st.time);
+  if (st.perBox && load.kind !== 'pallet') t = m.sum(st.perBox, Math.max(1, load.count));
+  yield* m.personWork(st.with, load.place.pt, t);
+  if (st.extraPct > 0 && m.rngPick.next() < st.extraPct) yield* m.personWork(st.with, load.place.pt, sampleDist(m.rngSvc, st.extraTime));
+}
+
+/** item mínimo para processos que não nascem de um palete do veículo (pedido, palete full) */
+export function auxLoad(m: SimModel, kind: ItemKind, count: number, cls: 0 | 1 | 2, origin?: 'picking' | 'full', measured = true): Load {
+  const pt = m.stageOutPt;
+  return {
+    kind, count, skuIdx: 0, cls, damaged: false, damagedCartons: 0, root: false, origin,
+    place: { ref: { kind: 'here' }, pt },
+    ctx: { dock: m.world.docksOut[0] ?? ({ inner: pt } as DockItem), tDock: m.sim.now, idx: 0, trailerM: 0, unloaded: new Countdown(m.sim, 1), ticked: true, measured },
+  };
+}
+
 /** executa o processo para um item, do bloco `fromId` (ou do Início) até o Fim */
 export function* runProcess(m: SimModel, def: ProcessDef, load: Load, fromId?: string): Process {
   const byId = new Map(def.steps.map((s) => [s.id, s]));
@@ -335,6 +363,10 @@ export function* runProcess(m: SimModel, def: ProcessDef, load: Load, fromId?: s
       case 'depalletize': yield* doConvert(m, load, s); cur = go(s.next); break;
       case 'decide': cur = decide(m, load, s) ? go(s.next) : go(s.nextNo); break;
       case 'wait': yield sampleDist(m.rngSvc, s.time); cur = go(s.next); break;
+      case 'task': yield* doTask(m, load, s); cur = go(s.next); break;
+      case 'pickRoute': yield* m.pickOrderCore(s.params, m.sim.now, true); cur = go(s.next); break;
+      case 'collect':
+      case 'board': cur = go(s.next); break; // só valem em processos de expedição
       case 'end': cur = undefined; break;
     }
   }

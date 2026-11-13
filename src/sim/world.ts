@@ -3,7 +3,7 @@ import { arrivalProfile } from '../model/traffic';
 import { validateEquipment } from '../model/equipment';
 import { capacityByLength } from '../model/receiving';
 import { shareFor } from '../model/traffic';
-import { STEP_LABEL, validateProcess } from '../model/process';
+import { STEP_LABEL, TRIGGERS, validateProcess } from '../model/process';
 import { EXP_LABEL, effectiveSteps, validateExpedition } from '../model/expedition';
 import { aisleCodeOf, aisleOf, areaCapacity } from '../model/areas';
 import {
@@ -252,7 +252,8 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     out.push({ level: 'aviso', msg: 'Palete full faseado sem equipamento de etapa 2 (paleteira/transpaleteira/AMR com quantidade > 0): a empilhadeira fará o transporte do stage.' });
   const exp = sc.expedition;
   if (sc.picking.loadFrom === 'stage' || exp.mode !== 'basic') {
-    if (!fullOn && sc.picking.mode !== 'pallet') out.push({ level: 'erro', msg: 'Carga a partir do stage sem fonte de paletes: ative a separação por palete ou o palete full, senão os caminhões de expedição ficam parados na doca.' });
+    const customSrc = sc.useCustomProcesses && sc.processes.some((p) => p.trigger === 'order' || (p.trigger === 'fullOrder' && fullOn));
+    if (!fullOn && sc.picking.mode !== 'pallet' && !customSrc) out.push({ level: 'erro', msg: 'Carga a partir do stage sem fonte de paletes: ative a separação por palete ou o palete full, senão os caminhões de expedição ficam parados na doca.' });
     if (outStages === 0) out.push({ level: 'aviso', msg: 'Carga a partir do stage, mas o layout não tem stage de expedição (a espera não será limitada).' });
     if (exp.mode === 'basic' && sc.picking.loadWith.length === 0) out.push({ level: 'erro', msg: 'Carga a partir do stage sem nenhum equipamento permitido.' });
   }
@@ -275,9 +276,11 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     if (sc.picking.stockout.mode === 'positions' && sc.picking.stockout.addresses.length === 0) out.push({ level: 'aviso', msg: 'Furo de estoque por posições ativado, mas nenhum endereço foi informado.' });
   }
   if (sc.useCustomProcesses) {
-    const def = sc.processes.find((p) => p.trigger === 'unloadPallet');
-    if (!def) out.push({ level: 'erro', msg: 'Processos personalizados ativados, mas não há nenhum processo de recebimento definido.' });
-    else {
+    const defs = TRIGGERS.map((t) => sc.processes.find((p) => p.trigger === t)).filter((d): d is NonNullable<typeof d> => !!d);
+    if (!sc.processes.find((p) => p.trigger === 'unloadPallet')) out.push({ level: sc.processes.length ? 'aviso' : 'erro', msg: sc.processes.length ? 'Processos personalizados sem processo de recebimento: o recebimento segue o fluxo padrão.' : 'Processos personalizados ativados, mas não há nenhum processo de recebimento definido.' });
+    if (sc.processes.some((p) => p.trigger === 'order' || p.trigger === 'fullOrder') && layout.elements.filter((e) => e.type === 'stage' && e.stageKind === 'out').length === 0)
+      out.push({ level: 'aviso', msg: 'Processos de separação sem stage de expedição desenhado: os paletes serão levados à doca de saída, sem limite de espaço.' });
+    for (const def of defs) {
       for (const i of validateProcess(def)) out.push({ level: i.level, msg: `Processo "${def.name}": ${i.msg}` });
       const need = new Set<string>();
       for (const s of def.steps) if ('with' in s) for (const r of s.with) need.add(r);
