@@ -65,7 +65,7 @@ describe('tipos de veículo', () => {
     expect(c.name).toBe('Carreta');
     expect(c.dockTurnMean).toBeCloseTo(3, 6);
     expect(t.dockTurnMean).toBeCloseTo(1, 6);
-    expect(c.trucks + t.trucks).toBeGreaterThan(40);
+    expect(c.trucks + t.trucks).toBeGreaterThan(25); // a descarga em série (um equipamento por vez no baú) reduz o total
     expect(Math.abs(c.trucks - t.trucks)).toBeLessThan(0.35 * (c.trucks + t.trucks));
   });
   it('sem tipos cadastrados usa um tipo único com os parâmetros gerais; médias ponderadas por participação', () => {

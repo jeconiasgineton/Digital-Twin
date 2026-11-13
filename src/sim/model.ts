@@ -8,7 +8,7 @@ import { PEOPLE_ROLES, breakMinutesPerDay, effectiveVehicles, offsetInShift, wav
 import { Rng, distMean as distMeanOf, sampleDist } from '../math/rng';
 import { mean, percentile } from '../math/stats';
 import type { Pt } from '../math/spatial';
-import { Pool, type PoolItem, Countdown, Sim, Store, type Process } from './engine';
+import { Pool, type PoolItem, Countdown, Sim, Store, VehicleGate, type Process } from './engine';
 import { type Agent, type AreaRT, type ConveyorRT, type DockItem, type RackRT, SLOT_FREE, SLOT_OCCUPIED, SLOT_RESERVED, type World, buildWorld, findSlot, slotAddr, slotLabel, slotSide } from './world';
 export type { World };
 
@@ -132,6 +132,13 @@ export class SimModel {
   private pickStockoutSec = 0;
   private rngPick: Rng;
   /** paletes prontos no stage de expedição (carga do caminhão a partir do stage) */
+  /** travas de acesso ao baú: uma por doca (um equipamento por vez dentro do veículo) */
+  private trailerLocks = new Map<DockItem, Pool<PoolItem>>();
+  private readonly lockWait: number[] = [];
+  /** equipamentos dentro de cada veículo agora e o máximo simultâneo observado (só para verificação) */
+  private insideNow = new Map<DockItem, number>();
+  maxInside = 0;
+  private pickBusySec = 0;
   readonly stageOutStore: Store<{ slot?: PoolItem }>;
   private stageOutSlots: Pool<PoolItem> | null = null;
   private stageOutInUse = 0;
@@ -503,7 +510,8 @@ export class SimModel {
     const n = this.palletsPerTruck(v.pallets);
     const unloaded = new Countdown(this.sim, n);
     const custom = this.sc.useCustomProcesses ? this.sc.processes.find((p) => p.trigger === 'unloadPallet') : undefined;
-    for (let i = 0; i < n; i++) this.sim.spawn(custom ? startPalletProcess(this, custom, dock, tDock, i, v.trailerLengthM, unloaded) : this.inboundPallet(dock, unloaded, tDock, i, v.trailerLengthM));
+    const gate = this.sc.vehicleExclusive ? new VehicleGate(this.sim, n) : undefined;
+    for (let i = 0; i < n; i++) this.sim.spawn(custom ? startPalletProcess(this, custom, dock, tDock, i, v.trailerLengthM, unloaded, gate) : this.inboundPallet(dock, unloaded, tDock, i, v.trailerLengthM, gate));
     yield unloaded.signal;
     this.dockIn.release(dock);
     this.tracer?.truckLeft(id, 'in', this.sim.now);
@@ -531,6 +539,52 @@ export class SimModel {
     return this.choosePool([this.eqPools.palletJack, this.eqPools.palletTruck, this.eqPools.amr]);
   }
 
+  /** pega um equipamento; a paleteira manual leva junto um operário do pool de operários (sem operários cadastrados, vai sozinha) */
+  *takeEq(pool: Pool<Agent>, near: Pt): Generator<any, Agent, any> {
+    const ag: Agent = yield pool.request(near);
+    if (ag.eq === 'palletJack' && this.workers.items.length > 0) {
+      const wk: Agent = yield this.workers.request(near);
+      ag.operator = wk;
+    }
+    return ag;
+  }
+
+  giveEq(pool: Pool<Agent>, ag: Agent) {
+    const wk = ag.operator;
+    if (wk) {
+      wk.x = ag.x;
+      wk.z = ag.z;
+      ag.operator = undefined;
+      this.workers.release(wk);
+    }
+    pool.release(ag);
+  }
+
+  /** trabalho dentro do veículo: entrar, manusear e sair; com exclusividade, um equipamento por vez por veículo */
+  *inVehicle(dock: DockItem, ag: Agent, depthM: number, handling: number, measured = true, gate?: VehicleGate, idx = 0): Process {
+    if (!this.sc.vehicleExclusive) {
+      yield this.inTrailer(ag, depthM);
+      yield handling;
+      return;
+    }
+    let lock = this.trailerLocks.get(dock);
+    if (!lock) {
+      const item: PoolItem = { id: 0, x: dock.inner.x, z: dock.inner.z, busy: false, busyTime: 0, busySince: 0, downTime: 0 };
+      lock = new Pool<PoolItem>(this.sim, [item]);
+      this.trailerLocks.set(dock, lock);
+    }
+    const t0 = this.sim.now;
+    const it: PoolItem = yield lock.request();
+    this.insideNow.set(dock, (this.insideNow.get(dock) ?? 0) + 1);
+    this.maxInside = Math.max(this.maxInside, this.insideNow.get(dock)!);
+    gate?.entered(idx); // entrou: o próximo palete já pode pedir equipamento
+    if (measured && this.sim.now >= this.warm) this.lockWait.push((this.sim.now - t0) / 60);
+    yield this.inTrailer(ag, depthM);
+    yield handling;
+    this.insideNow.set(dock, this.insideNow.get(dock)! - 1);
+    lock.release(it);
+  }
+
   /** movimentação dentro do baú (ida vazio, volta carregado) conforme a profundidade do palete */
   inTrailer(ag: Agent, d: number): number {
     if (d <= 0) return 0;
@@ -549,7 +603,7 @@ export class SimModel {
   /** leva um palete de avarias do stage até a área de triagem (liberando o espaço do stage na retirada) */
   private *triageTransport(from: Pt, slot: PoolItem | undefined, measured: boolean): Process {
     const pool = this.moverPool();
-    const mv: Agent = yield pool.request(from);
+    const mv: Agent = yield* this.takeEq(pool, from);
     yield this.go(mv, from, false);
     if (slot && this.stageSlots) {
       this.stageSlots.release(slot);
@@ -562,7 +616,7 @@ export class SimModel {
       if (!overflow) area.occupied++; // excedente é contabilizado como estouro, sem inflar a ocupação
     }
     mv.tasks++;
-    pool.release(mv);
+    this.giveEq(pool, mv);
   }
 
   /**
@@ -652,7 +706,7 @@ export class SimModel {
     });
   }
 
-  private *inboundPallet(dock: DockItem, unloaded: Countdown, tDock: number, idx: number, trailerM: number): Process {
+  private *inboundPallet(dock: DockItem, unloaded: Countdown, tDock: number, idx: number, trailerM: number, gate?: VehicleGate): Process {
     const sc = this.sc;
     const c = this.c;
     const rcv = sc.receiving;
@@ -675,10 +729,11 @@ export class SimModel {
 
     // 2) descarga com o equipamento disponível; distância dentro do baú conforme o veículo
     const eqPool = this.unloadPool();
-    let eq: Agent = yield eqPool.request(dock.inner);
+    const turn = gate?.before(idx);
+    if (turn) yield turn; // vez no veículo: só pede equipamento quando o palete anterior já entrou
+    let eq: Agent = yield* this.takeEq(eqPool, dock.inner);
     yield this.go(eq, dock.inner, false);
-    if (rcv.trailerDepth) yield this.inTrailer(eq, trailerDepthM(idx, trailerM));
-    yield sampleDist(this.rngSvc, sc.ops.unloadPallet);
+    yield* this.inVehicle(dock, eq, rcv.trailerDepth ? trailerDepthM(idx, trailerM) : 0, sampleDist(this.rngSvc, sc.ops.unloadPallet), measured, gate, idx);
     unloaded.tick();
 
     let from: Pt = dock.inner;
@@ -688,7 +743,7 @@ export class SimModel {
       const stage: Pt = stageSlot ? { x: stageSlot.x, z: stageSlot.z } : { x: dock.inner.x, z: dock.inner.z - 2.5 };
       from = stage;
       yield this.go(eq, stage, true);
-      eqPool.release(eq);
+      this.giveEq(eqPool, eq);
       const tCheck0 = this.sim.now;
       const ck: Agent = yield this.checkers.request(stage);
       yield this.go(ck, stage, false);
@@ -726,7 +781,7 @@ export class SimModel {
       held = eq; // sem conferência e armazenagem direta: a própria empilhadeira segue para a guarda
     } else {
       // equipamento sem elevação (ou armazenagem faseada): deixa o palete na doca
-      eqPool.release(eq);
+      this.giveEq(eqPool, eq);
     }
     yield* this.storePallet(from, cls, tDock, measured, held, stageSlot);
   }
@@ -753,6 +808,7 @@ export class SimModel {
     const side = slotSide(rack, slot);
     const ap = this.accessPoint(rack, addr.bay, side);
     let fk: Agent;
+    let viaTransit = false;
     const aisle = rack.faceAisle[side];
     const tpool = aisle ? this.transitPools.get(aisle) : undefined;
     if (this.sc.storage.mode === 'phased' && !held) {
@@ -766,13 +822,13 @@ export class SimModel {
         this.transitMax = Math.max(this.transitMax, this.transitInUse);
       }
       const step1 = this.step1Pool();
-      const mv: Agent = yield step1.request(from);
+      const mv: Agent = yield* this.takeEq(step1, from);
       yield this.go(mv, from, false);
       releaseStage();
       const drop: Pt = tslot ? { x: tslot.x, z: tslot.z } : ap;
       yield this.go(mv, drop, true);
       mv.tasks++;
-      step1.release(mv);
+      this.giveEq(step1, mv);
       // etapa 2: a empilhadeira recebe o destino final, pega o palete na rua e faz a elevação
       fk = yield this.forklifts.request(drop);
       yield this.go(fk, drop, false);
@@ -780,7 +836,7 @@ export class SimModel {
         tpool.release(tslot);
         this.transitInUse--;
       }
-      if (measured) this.phased++;
+      viaTransit = true;
     } else if (held) {
       fk = held;
     } else {
@@ -801,6 +857,7 @@ export class SimModel {
     }
     if (measured) {
       this.stored++;
+      if (viaTransit) this.phased++; // conta na conclusão, junto com os guardados (a fração nunca passa de 100%)
       this.putawayLead.push((this.sim.now - tDock) / 60);
     }
   }
@@ -825,7 +882,8 @@ export class SimModel {
     yield sampleDist(this.rngSvc, v.dockTurnover);
     const n = this.palletsPerTruck(v.pallets);
     const loaded = new Countdown(this.sim, n);
-    for (let i = 0; i < n; i++) this.sim.spawn(this.outboundPallet(dock, loaded, tDock));
+    const gate = this.sc.vehicleExclusive ? new VehicleGate(this.sim, n) : undefined;
+    for (let i = 0; i < n; i++) this.sim.spawn(this.outboundPallet(dock, loaded, tDock, i, n, v.trailerLengthM, gate));
     yield loaded.signal;
     this.dockOut.release(dock);
     this.tracer?.truckLeft(id, 'out', this.sim.now);
@@ -835,9 +893,9 @@ export class SimModel {
     }
   }
 
-  private *outboundPallet(dock: DockItem, loaded: Countdown, tDock: number): Process {
+  private *outboundPallet(dock: DockItem, loaded: Countdown, tDock: number, idx: number, n: number, trailerM: number, gate?: VehicleGate): Process {
     if (this.sc.picking.loadFrom === 'stage') {
-      yield* this.outboundFromStage(dock, loaded, tDock);
+      yield* this.outboundFromStage(dock, loaded, tDock, idx, n, trailerM, gate);
       return;
     }
     const c = this.c;
@@ -846,6 +904,7 @@ export class SimModel {
     const rack = this.chooseRackGet(cls);
     if (!rack) {
       if (tDock >= this.warm) c.stockouts++;
+      gate?.entered(idx); // não entra no veículo: libera a vez do próximo
       loaded.tick();
       return;
     }
@@ -853,11 +912,13 @@ export class SimModel {
     const addr = slotAddr(rack, outIdx);
     c.palletsRequested++;
     const ap = this.accessPoint(rack, addr.bay, slotSide(rack, outIdx));
+    const turnL = gate?.before(idx);
+    if (turnL) yield turnL;
     const fk: Agent = yield this.forklifts.request(ap);
     yield this.go(fk, ap, false);
     yield this.liftTime(addr.level);
     yield this.go(fk, dock.inner, true);
-    yield sampleDist(this.rngSvc, this.sc.ops.loadPallet);
+    yield* this.inVehicle(dock, fk, this.sc.receiving.trailerDepth ? trailerDepthM(n - 1 - idx, trailerM) : 0, sampleDist(this.rngSvc, this.sc.ops.loadPallet), tDock >= this.warm, gate, idx);
     fk.tasks++;
     this.forklifts.release(fk);
     loaded.tick();
@@ -1034,13 +1095,13 @@ export class SimModel {
       fk.tasks++;
       this.forklifts.release(fk);
       const pool = this.choosePool(fp.step1With.filter((k) => k !== 'forklift').map((k) => this.eqPools[k]));
-      const mv: Agent = yield pool.request({ x: tslot.x, z: tslot.z });
+      const mv: Agent = yield* this.takeEq(pool, { x: tslot.x, z: tslot.z });
       yield this.go(mv, { x: tslot.x, z: tslot.z }, false);
       tpool.release(tslot as never);
       this.transitInUse--;
       yield this.go(mv, stagePt, true);
       mv.tasks++;
-      pool.release(mv);
+      this.giveEq(pool, mv);
     }
     this.stageOutArrive(outSlot);
     if (measured) this.fullPallets++;
@@ -1048,7 +1109,7 @@ export class SimModel {
   }
 
   /** caminhão de expedição carregando a partir do stage: espera haver palete separado */
-  private *outboundFromStage(dock: DockItem, loaded: Countdown, tDock: number): Process {
+  private *outboundFromStage(dock: DockItem, loaded: Countdown, tDock: number, idx: number, n: number, trailerM: number, gate?: VehicleGate): Process {
     const c = this.c;
     if (tDock >= this.warm) c.outReq++;
     c.palletsRequested++;
@@ -1059,14 +1120,17 @@ export class SimModel {
     if (tDock >= this.warm) this.expeditionWait.push((this.sim.now - t0) / 60);
     const pt: Pt = tok.slot ? { x: tok.slot.x, z: tok.slot.z } : this.stageOutPt;
     const pool = this.choosePool(this.sc.picking.loadWith.map((k) => this.eqPools[k]));
-    const ag: Agent = yield pool.request(pt);
+    const turn = gate?.before(idx);
+    if (turn) yield turn;
+    const ag: Agent = yield* this.takeEq(pool, pt);
     yield this.go(ag, pt, false);
     if (tok.slot && this.stageOutSlots) this.stageOutSlots.release(tok.slot);
     this.stageOutInUse--;
     yield this.go(ag, dock.inner, true);
-    yield sampleDist(this.rngSvc, this.sc.ops.loadPallet);
+    // carrega do fundo para a porta; um equipamento por vez dentro do veículo
+    yield* this.inVehicle(dock, ag, this.sc.receiving.trailerDepth ? trailerDepthM(n - 1 - idx, trailerM) : 0, sampleDist(this.rngSvc, this.sc.ops.loadPallet), tDock >= this.warm, gate, idx);
     ag.tasks++;
-    pool.release(ag);
+    this.giveEq(pool, ag);
     loaded.tick();
     c.palletsDone++;
     if (this.measuring) {
@@ -1082,6 +1146,7 @@ export class SimModel {
     const stage = this.stageOutPt;
     const wk: Agent = yield this.workers.request(stage);
     const measured = tArr >= this.warm;
+    const tBusy0 = this.sim.now;
     const dist = (a: Pt, b: Pt) => this.world.nav.distance(a, b);
     const here: Pt = { x: wk.x, z: wk.z };
     // os dois formatos sobre as mesmas paradas: tempo de rota = manuseio + deslocamento
@@ -1144,6 +1209,7 @@ export class SimModel {
       yield* this.deliverPickPallet(wk);
     }
     wk.tasks++;
+    if (measured) this.pickBusySec += this.sim.now - tBusy0;
     this.workers.release(wk);
     done.tick();
   }
@@ -1389,7 +1455,7 @@ export class SimModel {
       pickRouteTimeU: mean(this.pickRouteU),
       pickRouteTimeZigzag: mean(this.pickRouteZ),
       // produtividade pelo tempo trabalhado dos separadores (andar, ler, pegar, colocar, levar ao stage): vem do tempo por caixa
-      boxesPerPickerHour: sc.picking.mode === 'pallet' && this.busyTotal(this.workers) > 0 ? c.cartons / (this.busyTotal(this.workers) / 3600) : 0,
+      boxesPerPickerHour: sc.picking.mode === 'pallet' && this.pickBusySec > 0 ? c.cartons / (this.pickBusySec / 3600) : 0,
       stockoutPicksPerDay: this.pickStockouts / days,
       stockoutTimeLostPerDay: this.pickStockoutSec / 60 / days,
       fullOrdersPerDay: this.fullOrders / days,
@@ -1398,6 +1464,7 @@ export class SimModel {
       fullNoStockPerDay: this.fullNoStock / days,
       stageOutMax: this.stageOutMax,
       expeditionWaitMean: mean(this.expeditionWait),
+      vehicleLockWaitMean: mean(this.lockWait),
     };
     kpis.backlogOrders = this.workers.queueLength; // pedidos ainda aguardando operário ao final
     return {

@@ -61,6 +61,7 @@ const KPI_ROWS: [keyof Aggregated, string, Fmt][] = [
   ['fullOrderTimeMean', 'Pedido de palete full: até o stage (min)', (v) => fmt(v, 1)],
   ['fullNoStockPerDay', 'Paletes full pedidos sem estoque / dia', (v) => fmt(v, 2)],
   ['stageOutMax', 'Ocupação máxima do stage de expedição (paletes)', (v) => fmt(v, 0)],
+  ['vehicleLockWaitMean', 'Espera para entrar no baú – um equipamento por vez (min)', (v) => fmt(v, 2)],
   ['expeditionWaitMean', 'Espera do caminhão por palete separado (min)', (v) => fmt(v, 1)],
   ['putawayLeadMean', 'Lead time doca→endereço (min)', (v) => fmt(v, 1)],
   ['orderCycleMean', 'Ciclo do pedido (min)', (v) => fmt(v, 1)],

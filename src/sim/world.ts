@@ -20,6 +20,8 @@ export interface Agent extends PoolItem {
   speedLoaded: number;
   km: number;
   tasks: number;
+  /** operário que acompanha a paleteira manual durante a tarefa (sai do pool de operários) */
+  operator?: Agent;
 }
 
 export interface DockItem extends PoolItem {

@@ -77,6 +77,7 @@ export function defaultScenario(): Scenario {
     storage: { mode: 'direct', step1With: ['palletTruck', 'palletJack', 'amr'] },
     processes: [],
     picking: defaultPicking(),
+    vehicleExclusive: true,
     useCustomProcesses: false,
   };
 }

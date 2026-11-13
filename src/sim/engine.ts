@@ -336,6 +336,24 @@ export class Pool<T extends PoolItem> {
   }
 }
 
+/**
+ * Senha de acesso ao veículo: o palete N só pede equipamento quando o N−1 já entrou no baú. Assim só uma máquina
+ * trabalha dentro e a seguinte já está se aproximando, sem formar fila de equipamentos ociosos na porta.
+ */
+export class VehicleGate {
+  private sigs: Signal[];
+  constructor(sim: Sim, n: number) {
+    this.sigs = Array.from({ length: n }, () => new Signal(sim));
+  }
+  /** sinal a esperar antes de pedir equipamento (null para o primeiro palete) */
+  before(i: number): Signal | null {
+    return i > 0 ? this.sigs[i - 1] : null;
+  }
+  entered(i: number) {
+    this.sigs[i]?.fire();
+  }
+}
+
 /** Fila de itens prontos: quem pede espera até haver um item (ex.: caminhão esperando paletes separados). */
 export class Store<T> {
   items: T[] = [];

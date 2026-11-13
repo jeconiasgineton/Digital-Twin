@@ -5,7 +5,7 @@ import {
   type RetrieveStep, type SeparateStep, type Step,
 } from '../model/process';
 import { trailerDepthM } from '../model/receiving';
-import { Countdown, type Pool, type PoolItem, type Process } from './engine';
+import { Countdown, type Pool, type PoolItem, type Process, type VehicleGate } from './engine';
 import type { SimModel } from './model';
 import { SLOT_OCCUPIED, slotAddr, slotSide, type Agent, type DockItem, type RackRT } from './world';
 
@@ -38,6 +38,8 @@ export interface LoadCtx {
   idx: number;
   trailerM: number;
   unloaded: Countdown;
+  /** senha de acesso ao veículo (um equipamento por vez) */
+  gate?: VehicleGate;
   ticked: boolean;
   measured: boolean;
 }
@@ -124,10 +126,14 @@ function* doMove(m: SimModel, load: Load, st: MoveStep): Process {
   const fromKind = st.from.kind === 'here' ? from.ref.kind : st.from.kind;
   const dest = yield* reserveSpace(m, load, st.to); // reserva antes de pegar recurso: não trava a frota esperando espaço
   const pool = pickPool(m, st.with);
-  const ag: Agent = yield pool.request(from.pt);
+  if (fromKind === 'trailer' && load.ctx.gate) {
+    const turn = load.ctx.gate.before(load.ctx.idx);
+    if (turn) yield turn; // vez no veículo
+  }
+  const ag: Agent = yield* m.takeEq(pool, from.pt);
   yield m.go(ag, from.pt, false);
-  if (fromKind === 'trailer' && m.sc.receiving.trailerDepth) yield m.inTrailer(ag, trailerDepthM(load.ctx.idx, load.ctx.trailerM));
-  yield handlingTime(m, load, st.handling);
+  if (fromKind === 'trailer') yield* m.inVehicle(load.ctx.dock, ag, m.sc.receiving.trailerDepth ? trailerDepthM(load.ctx.idx, load.ctx.trailerM) : 0, handlingTime(m, load, st.handling), load.ctx.measured, load.ctx.gate, load.ctx.idx);
+  else yield handlingTime(m, load, st.handling);
   from.hold?.();
   from.hold = undefined;
   if (fromKind === 'trailer' && !load.ctx.ticked) {
@@ -136,7 +142,7 @@ function* doMove(m: SimModel, load: Load, st: MoveStep): Process {
   }
   yield m.go(ag, dest.pt, true);
   ag.tasks++;
-  pool.release(ag);
+  m.giveEq(pool, ag);
   load.place = dest;
 }
 
@@ -148,7 +154,7 @@ function* doLift(m: SimModel, load: Load, st: LiftStep): Process {
   const d = load.dest;
   if (!d) return;
   const pool = pickPool(m, st.with);
-  const ag: Agent = yield pool.request(load.place.pt);
+  const ag: Agent = yield* m.takeEq(pool, load.place.pt);
   yield m.go(ag, load.place.pt, false);
   load.place.hold?.();
   load.place.hold = undefined;
@@ -173,7 +179,7 @@ function* doLift(m: SimModel, load: Load, st: LiftStep): Process {
     load.place = { ref: { kind: 'rack' }, pt: d.ap };
   }
   ag.tasks++;
-  pool.release(ag);
+  m.giveEq(pool, ag);
 }
 
 /** Endereçar: define o endereço pela regra de armazenagem (reserva/retira a posição) */
@@ -208,7 +214,7 @@ function doAddress(m: SimModel, load: Load, mode: 'put' | 'take'): boolean {
 function* doCheck(m: SimModel, load: Load, st: CheckStep): Process {
   const t0 = m.sim.now;
   const pool = pickPool(m, st.with);
-  const ag: Agent = yield pool.request(load.place.pt);
+  const ag: Agent = yield* m.takeEq(pool, load.place.pt);
   yield m.go(ag, load.place.pt, false);
   const damaged = m.rngDmg.next() < st.damagePct;
   let t = sampleDist(m.rngSvc, st.time);
@@ -219,7 +225,7 @@ function* doCheck(m: SimModel, load: Load, st: CheckStep): Process {
     nBad = Math.min(load.count, Math.max(1, Math.round(frac * load.count)));
   }
   yield t;
-  pool.release(ag);
+  m.giveEq(pool, ag);
   load.damaged = damaged;
   load.damagedCartons = nBad;
   if (load.ctx.measured) {
@@ -240,10 +246,10 @@ function* doSeparate(m: SimModel, def: ProcessDef, load: Load, st: SeparateStep)
   const n = load.damagedCartons;
   const t0 = m.sim.now;
   const pool = pickPool(m, st.with);
-  const ag: Agent = yield pool.request(load.place.pt);
+  const ag: Agent = yield* m.takeEq(pool, load.place.pt);
   yield m.go(ag, load.place.pt, false);
   yield m.sum(st.perItem, n); // repaletização: tempo por caixa movida
-  pool.release(ag);
+  m.giveEq(pool, ag);
   if (load.ctx.measured && load.cycleIdx !== undefined) m.checkCycle[load.cycleIdx] += (m.sim.now - t0) / 60;
   const child: Load = {
     kind: 'pallet', count: n, skuIdx: load.skuIdx, cls: load.cls, damaged: true, damagedCartons: n, root: false,
@@ -262,10 +268,10 @@ function* doRetrieve(m: SimModel, def: ProcessDef, load: Load, st: RetrieveStep)
   const n = Math.min(load.count, q.mode === 'all' ? load.count : q.mode === 'count' ? Math.max(1, Math.round(q.value)) : Math.max(1, Math.round(q.value * load.count)));
   if (n <= 0) return;
   const pool = pickPool(m, st.with);
-  const ag: Agent = yield pool.request(load.place.pt);
+  const ag: Agent = yield* m.takeEq(pool, load.place.pt);
   yield m.go(ag, load.place.pt, false);
   yield m.sum(st.perItem, n);
-  pool.release(ag);
+  m.giveEq(pool, ag);
   load.count -= n;
   const child: Load = {
     kind: st.item, count: n, skuIdx: load.skuIdx, cls: load.cls, damaged: false, damagedCartons: 0, root: false,
@@ -277,10 +283,10 @@ function* doRetrieve(m: SimModel, def: ProcessDef, load: Load, st: RetrieveStep)
 /** Paletizar / Despaletizar: converte entre palete e caixas/fardos (tempo por item) */
 function* doConvert(m: SimModel, load: Load, st: Extract<Step, { type: 'palletize' | 'depalletize' }>): Process {
   const pool = pickPool(m, st.with);
-  const ag: Agent = yield pool.request(load.place.pt);
+  const ag: Agent = yield* m.takeEq(pool, load.place.pt);
   yield m.go(ag, load.place.pt, false);
   yield m.sum(st.perItem, Math.max(1, load.count));
-  pool.release(ag);
+  m.giveEq(pool, ag);
   load.kind = st.type === 'palletize' ? 'pallet' : st.item;
 }
 
@@ -294,6 +300,7 @@ function decide(m: SimModel, load: Load, st: DecideStep): boolean {
 }
 
 function finish(m: SimModel, load: Load) {
+  load.ctx.gate?.entered(load.ctx.idx); // garante que o próximo palete não fique esperando uma vez que nunca chegou
   load.place.hold?.();
   load.place.hold = undefined;
   if (!load.ctx.ticked) {
@@ -335,7 +342,7 @@ export function* runProcess(m: SimModel, def: ProcessDef, load: Load, fromId?: s
 }
 
 /** cria o item de um palete que acabou de docar e inicia o processo personalizado */
-export function startPalletProcess(m: SimModel, def: ProcessDef, dock: DockItem, tDock: number, idx: number, trailerM: number, unloaded: Countdown): Process {
+export function startPalletProcess(m: SimModel, def: ProcessDef, dock: DockItem, tDock: number, idx: number, trailerM: number, unloaded: Countdown, gate?: VehicleGate): Process {
   const sk = m.pickSku();
   const measured = tDock >= m.warm;
   m.c.palletsRequested++;
@@ -343,7 +350,7 @@ export function startPalletProcess(m: SimModel, def: ProcessDef, dock: DockItem,
   const load: Load = {
     kind: 'pallet', count: m.skuCartons[sk.idx] ?? 1, skuIdx: sk.idx, cls: sk.cls, damaged: false, damagedCartons: 0, root: true,
     place: { ref: { kind: 'trailer' }, pt: dock.inner },
-    ctx: { dock, tDock, idx, trailerM, unloaded, ticked: false, measured },
+    ctx: { dock, tDock, idx, trailerM, unloaded, gate, ticked: false, measured },
   };
   return runProcess(m, def, load);
 }

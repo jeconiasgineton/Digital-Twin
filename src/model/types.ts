@@ -277,6 +277,8 @@ export interface Scenario {
   processes: ProcessDef[];
   /** separação picking por palete (rota, tempos, furos de estoque) */
   picking: PickingSpec;
+  /** dentro de cada veículo só um equipamento (ou operário com paleteira) trabalha por vez; vale para recebimento e expedição */
+  vehicleExclusive: boolean;
   /** true: o processo personalizado de recebimento conduz cada palete que sai do veículo, no lugar do fluxo padrão */
   useCustomProcesses: boolean;
 }
@@ -383,6 +385,7 @@ export interface RunKpis {
   fullNoStockPerDay: number; // paletes pedidos sem estoque
   stageOutMax: number; // paletes simultâneos no stage de expedição (carga a partir do stage)
   expeditionWaitMean: number; // espera do caminhão por palete separado (min)
+  vehicleLockWaitMean: number; // espera para entrar no baú (um equipamento por vez) (min)
 }
 
 export interface VehicleStat {

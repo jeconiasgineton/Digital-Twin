@@ -142,7 +142,8 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
   const putawayLeg = phased ? tvE(dTR) + tvL(dTR) : tvE(dIn) + tvL(dIn);
   const step1ByFork = phased && !step1Movers ? tvE(dST) + tvL(dST) : 0;
   const sIn = putawayLeg + fkUnloadT + stageEx + step1ByFork + lift;
-  const sOut = tvE(dOut) + lift + tvL(dOut) + distMean(ops.loadPallet);
+  const depthOutM = sc.receiving.trailerDepth ? vOut.depthM : 0;
+  const sOut = tvE(dOut) + lift + tvL(dOut) + distMean(ops.loadPallet) + tvE(depthOutM) + tvL(depthOutM); // inclui a ida e volta dentro do baú
   const lamIn = { avg: pIn.avg / 3600, peak: pIn.peak / 3600 };
   const triageByFork = staged && cs.pDamaged > 0 && moverUnits === 0; // sem paleteira/transpaleteira/AMR a empilhadeira leva as avarias
   const sTri = tvE(dStageTri) + tvL(dStageTri);
@@ -198,9 +199,12 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
 
   // docas
   const cEffIn = Math.max(1, Math.min(bIn.mean, fk.count * fk.availability * 0.5));
-  const dockSIn = vIn.dockSec + (bIn.mean * (tvE(dIn) + distMean(ops.unloadPallet) + tvE(depthM) + tvL(depthM))) / cEffIn;
+  const insideIn = distMean(ops.unloadPallet) + tvE(depthM) + tvL(depthM);
+  // com exclusividade só um equipamento trabalha dentro do veículo: a parte de dentro é serial; a aproximação se sobrepõe
+  const dockSIn = sc.vehicleExclusive ? vIn.dockSec + tvE(dIn) + bIn.mean * insideIn : vIn.dockSec + (bIn.mean * (tvE(dIn) + insideIn)) / cEffIn;
   const cEffOut = Math.max(1, Math.min(bOut.mean, fk.count * fk.availability * 0.5));
-  const dockSOut = vOut.dockSec + (bOut.mean * sOut) / cEffOut;
+  const insideOut = distMean(ops.loadPallet) + tvE(depthOutM) + tvL(depthOutM);
+  const dockSOut = sc.vehicleExclusive ? vOut.dockSec + tvE(dOut) + lift + tvL(dOut) + bOut.mean * insideOut : vOut.dockSec + (bOut.mean * sOut) / cEffOut;
   rows.push(mkRow('dockIn', 'Docas de recebimento', 'docas', w.docksIn.length, 1, tin.avg / 3600, tin.peak / 3600, dockSIn, dockSIn, 0.3, 1, `Ocupação por caminhão ≈ ${(dockSIn / 60).toFixed(0)} min (manobra + descarga com ${cEffIn.toFixed(1)} empilhadeiras efetivas).`));
   rows.push(mkRow('dockOut', 'Docas de expedição', 'docas', w.docksOut.length, 1, tout.avg / 3600, tout.peak / 3600, dockSOut, dockSOut, 0.3, 1, `Ocupação por caminhão ≈ ${(dockSOut / 60).toFixed(0)} min.`));
 
@@ -373,6 +377,7 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
       'Distâncias: grade de navegação com obstáculos (racks/paredes) via Dijkstra/A*; velocidade com aceleração constante.',
       `Disponibilidade dos recursos aplicada à carga (λ/A).`,
       'Recebimento (estimativa): o tempo de conferência + triagem por palete é amostrado das mesmas distribuições da simulação (semente fixa); paletes avariados inteiros não entram no estoque; sem equipamento sem elevação, a empilhadeira leva as avarias à triagem.',
+      'Veículo (estimativa): com exclusividade só um equipamento (ou operário com paleteira) trabalha dentro do baú por vez, nos dois sentidos; a ocupação da doca soma o trabalho de dentro em série. Paleteira manual leva um operário do pool de operários (a análise não desconta esse operário do dimensionamento de picking).',
       'Descarga (estimativa): a parcela feita por empilhadeira é proporcional ao número de unidades permitidas; a distância dentro do baú usa a profundidade média por tipo de veículo.',
       'Armazenagem faseada (estimativa): a empilhadeira faz a etapa 2 (do transitório ao endereço) e, sem equipamento de etapa 1, também a etapa 1; os transitórios são tratados em conjunto, sem desequilíbrio entre ruas.',
       'Stage, transitórios e triagem: ocupação por Little (L=λ·W) com folga de lote (IDC) no dimensionamento; a triagem acumula até a coleta periódica.',

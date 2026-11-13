@@ -289,6 +289,8 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     if (lf) sc.picking.loadFrom = lf.startsWith('stage') ? 'stage' : 'rack';
     const lw = kindsOf(g('expedicao_equipamentos'));
     if (lw.length) sc.picking.loadWith = lw;
+    const ve = norm(g('veiculo_exclusivo'));
+    if (ve) sc.vehicleExclusive = ['s', 'sim', '1', 'true', 'x'].includes(ve);
     const am = norm(g('picking_area_modo'));
     if (am) sc.picking.area.mode = am.startsWith('perso') || am.startsWith('custom') ? 'custom' : am.startsWith('face') ? 'faces' : 'floor';
     setN('picking_area_niveis', (v) => (sc.picking.area.levels = Math.max(1, Math.round(v))));
@@ -654,6 +656,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['armazenagem_modo', sc.storage.mode === 'phased' ? 'faseada' : 'direta', 'direta (empilhadeira do stage ao endereço) | faseada (etapa 1 sem elevação até a rua; etapa 2 elevação)'],
     ['armazenagem_etapa1_equipamentos', sc.storage.step1With.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Faseada: equipamentos da etapa 1, separados por ; (o disponível é acionado)'],
     ['separacao_modo', sc.picking.mode === 'pallet' ? 'palete' : 'legado', 'legado (esteira e embalagem) | palete (rota, leitura de endereço, limite do palete, furos)'],
+    ['veiculo_exclusivo', sc.vehicleExclusive ? 'S' : 'N', 'S = um equipamento (ou operário com paleteira) por vez dentro de cada veículo, em recebimento e expedição'],
     ['palete_full_pedidos_hora', sc.picking.full.ordersPerHour, 'Palete full: pedidos por hora (0 = desligado)'],
     ['palete_full_paletes_media', sc.picking.full.palletsPerOrder.mean, 'Palete full: paletes por pedido – média'],
     ['palete_full_paletes_desvio', sc.picking.full.palletsPerOrder.sd, 'Palete full: paletes por pedido – desvio'],

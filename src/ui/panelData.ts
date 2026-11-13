@@ -294,6 +294,8 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
     section('Veículos e chegadas', [
       arrivalBox(ctx, 'Chegadas – recebimento', sc.arrivalsIn),
       arrivalBox(ctx, 'Chegadas – expedição', sc.arrivalsOut),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.vehicleExclusive, onchange: (ev: Event) => { sc.vehicleExclusive = (ev.target as HTMLInputElement).checked; ch(); } }), 'Um equipamento por vez dentro do veículo (recebimento e expedição)'),
+      h('p', { class: 'note' }, 'Com a regra ligada, duas máquinas (ou dois operários com paleteira) não entram juntos no baú: só uma trabalha dentro e a próxima já se aproxima. O trabalho de dentro fica em série e ocupa mais a doca.'),
       numField('Limite de espera na doca (gargalo)', () => sc.dockWaitThresholdMin, (v) => ((sc.dockWaitThresholdMin = Math.max(0, v)), ch()), { step: 1, min: 0, unit: 'min', title: 'Caminhões que esperam mais que isso contam no indicador "% acima do limite"' }),
       h('b', null, 'Tipos de veículo'),
       sc.vehicleTypes.length ? null : h('p', { class: 'note' }, 'Sem tipos cadastrados: todos os caminhões são iguais (paletes por caminhão e manobra gerais). Adicione tipos para diferenciar o tempo de docagem e a carga de cada veículo.'),
@@ -425,7 +427,7 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
           sc.receiving.unloadWith = (ev.target as HTMLInputElement).checked ? [...new Set([...sc.receiving.unloadWith, k])] : sc.receiving.unloadWith.filter((x) => x !== k);
           ch(); ctx.rerender();
         } }), EQUIPMENT_NAMES[k]))),
-      h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.receiving.trailerDepth, onchange: (ev: Event) => { sc.receiving.trailerDepth = (ev.target as HTMLInputElement).checked; ch(); } }), 'Distância dentro do baú conforme o comprimento do veículo'),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: sc.receiving.trailerDepth, onchange: (ev: Event) => { sc.receiving.trailerDepth = (ev.target as HTMLInputElement).checked; ch(); } }), 'Distância dentro do baú conforme o comprimento do veículo (recebimento e expedição)'),
       h('b', null, 'Avarias'),
       numField('Paletes avariados', () => sc.receiving.damagePalletPct * 100, (v) => ((sc.receiving.damagePalletPct = Math.min(1, Math.max(0, v / 100))), ch()), { step: 0.5, min: 0, max: 100, unit: '%', title: 'Probabilidade de cada palete conferido ter avaria. Padrão: 3% (premissa)' }),
       numField('Caixas avariadas no palete – mínimo', () => sc.receiving.damagedCartonsFraction.a * 100, (v) => { const f = sc.receiving.damagedCartonsFraction; sc.receiving.damagedCartonsFraction = { kind: 'triangular', a: Math.min(1, Math.max(0, v / 100)), b: f.b, c: f.c }; ch(); }, { step: 1, min: 0, max: 100, unit: '%' }),
