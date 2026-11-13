@@ -1,5 +1,7 @@
 import { amrChargeHours } from '../model/equipment';
 import { checkStats } from '../model/receiving';
+import { effectiveSteps, type ExpPerson, type ExpStep } from '../model/expedition';
+import { pickProfile } from './pickprofile';
 import { arrivalProfile, vehicleMeans } from '../model/traffic';
 import type { EquipmentKind, EquipmentSpec, Layout, Scenario } from '../model/types';
 import { distMean, distScv } from '../math/rng';
@@ -68,7 +70,8 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
   const vIn = vehicleMeans(sc, 'in');
   const vOut = vehicleMeans(sc, 'out');
   const bIn = { ...sc.palletsPerTruckIn, mean: vIn.pallets };
-  const bOut = { ...sc.palletsPerTruckOut, mean: vOut.pallets };
+  const expOn = sc.expedition.mode !== 'basic';
+  const bOut = expOn ? { mean: vOut.pallets, sd: 0, max: vOut.pallets } : { ...sc.palletsPerTruckOut, mean: vOut.pallets };
   const pIn = { avg: tin.avg * bIn.mean, peak: tin.peak * bIn.mean, daily: tin.daily * bIn.mean };
   const pOut = { avg: tout.avg * bOut.mean, peak: tout.peak * bOut.mean, daily: tout.daily * bOut.mean };
 
@@ -136,6 +139,72 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
   const dTR = phased && transitPts.length ? meanTravel(w, transitPts, (r) => mid(r)) : dIn; // transitório → rack
   const dST = phased && transitPts.length ? avgDist(stagePts, transitPts) : 0; // stage/doca → transitório
   const dStageTri = triagePts.length ? avgDist(stagePts, triagePts) : 0;
+
+  /* ---- separação por palete, palete full e expedição por etapas ---- */
+  const pk = sc.picking;
+  const pickOn = pk.mode === 'pallet';
+  const fp = pk.full;
+  const fullOn = fp.ordersPerHour > 0;
+  const stageOut = pk.loadFrom === 'stage' || expOn;
+  const exSteps: ExpStep[] = expOn ? effectiveSteps(sc.expedition) : [];
+  const stagePtOut: Pt = w.stagesOut[0]?.pt ?? w.docksOut[0]?.inner ?? w.home;
+  if (pickOn || fullOn || stageOut) keyAll([stagePtOut]);
+  const dRS = (pickOn || fullOn || stageOut) && w.racks.length ? meanTravel(w, [stagePtOut], (r) => mid(r)) : 0; // rack → stage de expedição
+  const dSD = stageOut ? avgDist([stagePtOut], dockOutPts) : 0; // stage de expedição → doca
+  const fullPhased = fullOn && fp.mode === 'phased' && transitPts.length > 0;
+  if (fullPhased) keyAll(transitPts);
+  const dTS = fullPhased ? avgDist(transitPts, [stagePtOut]) : 0; // transitório → stage de expedição
+  const prof = pickOn ? pickProfile(sc, layout, w) : null;
+  const fullPal = fullOn ? fp.ordersPerHour * sc.demandFactor * Math.max(1, fp.palletsPerOrder.mean) : 0; // paletes full por hora
+  const pickPal = { avg: prof ? ord.avg * prof.palletsPerOrder : 0, peak: prof ? ord.peak * prof.palletsPerOrder : 0 }; // paletes de picking por hora
+  const supply = { avg: pickPal.avg + fullPal, peak: pickPal.peak + fullPal }; // paletes que chegam ao stage de expedição
+  const demandPal = { avg: pOut.avg, peak: pOut.peak }; // paletes pedidos pelos caminhões de saída
+  /** fluxo que de fato passa pelo stage: o menor entre a oferta e a demanda (sem oferta, usa a demanda para dimensionar o que falta) */
+  const flow = (k: 'avg' | 'peak') => (!stageOut ? 0 : supply[k] > 0 ? Math.min(supply[k], demandPal[k]) : demandPal[k]);
+  const nLoad = Math.max(1, vOut.pallets);
+  const boardStep = exSteps.find((x) => x.type === 'board');
+  const loadKinds: EquipmentKind[] = boardStep && boardStep.type === 'board' ? boardStep.with : expOn ? ['forklift'] : pk.loadWith;
+  const loadAllowed = loadKinds.filter((k) => unitsOf(k) > 0);
+  const loadUnits = loadAllowed.reduce((n, k) => n + unitsOf(k), 0);
+  const shareFkLoad = stageOut ? (loadUnits > 0 ? (loadAllowed.includes('forklift') ? fk.count / loadUnits : 0) : 1) : 1;
+  const bpp = prof?.boxesPerPallet ?? pk.palletLimit.mean; // caixas por palete de picking
+  const fullShare = supply.avg > 0 ? fullPal / supply.avg : 0;
+  /** tempo de conferência de um palete na expedição (mistura de full e picking) */
+  const confSec = (() => {
+    const c = exSteps.find((x) => x.type === 'conference');
+    return c && c.type === 'conference' ? fullShare * distMean(c.fullTime) + (1 - fullShare) * distMean(c.perBox) * bpp : 0;
+  })();
+  const poolOf = (r: ExpPerson) => (r === 'checker' ? sc.checkers : sc.workers);
+  /** n tarefas em paralelo conforme as pessoas do pool (sem pool o tempo passa livre) */
+  const parSec = (n: number, sec: number, r: ExpPerson) => {
+    if (n <= 0) return 0;
+    const cnt = poolOf(r).count * poolOf(r).availability;
+    const servers = cnt > 0 ? Math.max(1, Math.min(n, cnt)) : n;
+    return Math.max(sec, (n / servers) * sec);
+  };
+  /** classes de trabalho das pessoas na expedição: { quem, taxa (1/s) por palete ou por carga, tempo (s) } */
+  type Cls = { lam: { avg: number; peak: number }; s: number };
+  const ldRate = { avg: flow('avg') / nLoad / 3600, peak: flow('peak') / nLoad / 3600 };
+  const palRate = { avg: flow('avg') / 3600, peak: flow('peak') / 3600 };
+  const expClasses = (r: ExpPerson): Cls[] => {
+    const out: Cls[] = [];
+    const mul = (x: { avg: number; peak: number }, f: number) => ({ avg: x.avg * f, peak: x.peak * f });
+    for (const st of exSteps) {
+      if (st.type === 'board' || st.resource !== r) continue;
+      switch (st.type) {
+        case 'conference': out.push({ lam: palRate, s: confSec }); break;
+        case 'reconcile': out.push({ lam: ldRate, s: distMean(st.time) + st.divergencePct * distMean(st.correctionTime) }); break;
+        case 'customize': out.push({ lam: mul(ldRate, nLoad * st.pickPct), s: distMean(st.time) }); break;
+        default: out.push({ lam: ldRate, s: distMean(st.time) });
+      }
+    }
+    return out.filter((c) => c.lam.avg > 0 && c.s > 0);
+  };
+  const aggCls = (cs: Cls[]) => {
+    const la = cs.reduce((a, c) => a + c.lam.avg, 0);
+    const lp = cs.reduce((a, c) => a + c.lam.peak, 0);
+    return { la, lp, sa: la > 0 ? cs.reduce((a, c) => a + c.lam.avg * c.s, 0) / la : 0, sp: lp > 0 ? cs.reduce((a, c) => a + c.lam.peak * c.s, 0) / lp : 0 };
+  };
   const fkUnloadT = shareFkUnload * (unloadT + tvE(depthM) + tvL(depthM));
 
   // tarefa de entrada da empilhadeira: vazio até o palete, [descarga + baú], [stage], guarda (direta ou etapa 2)
@@ -143,15 +212,21 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
   const step1ByFork = phased && !step1Movers ? tvE(dST) + tvL(dST) : 0;
   const sIn = putawayLeg + fkUnloadT + stageEx + step1ByFork + lift;
   const depthOutM = sc.receiving.trailerDepth ? vOut.depthM : 0;
-  const sOut = tvE(dOut) + lift + tvL(dOut) + distMean(ops.loadPallet) + tvE(depthOutM) + tvL(depthOutM); // inclui a ida e volta dentro do baú
+  const sOutRack = tvE(dOut) + lift + tvL(dOut) + distMean(ops.loadPallet) + tvE(depthOutM) + tvL(depthOutM); // inclui a ida e volta dentro do baú
+  const sOutStage = tvE(dSD) + tvL(dSD) + distMean(ops.loadPallet) + tvE(depthOutM) + tvL(depthOutM); // carga a partir do stage de expedição
+  const sOut = stageOut ? sOutStage : sOutRack;
   const lamIn = { avg: pIn.avg / 3600, peak: pIn.peak / 3600 };
   const triageByFork = staged && cs.pDamaged > 0 && moverUnits === 0; // sem paleteira/transpaleteira/AMR a empilhadeira leva as avarias
   const sTri = tvE(dStageTri) + tvL(dStageTri);
-  const lamOut = { avg: pOut.avg / 3600, peak: pOut.peak / 3600 };
+  const lamOut = stageOut ? { avg: (flow('avg') * shareFkLoad) / 3600, peak: (flow('peak') * shareFkLoad) / 3600 } : { avg: pOut.avg / 3600, peak: pOut.peak / 3600 };
+  // palete full: a empilhadeira retira do endereço e leva ao stage (faseada: baixa no transitório e outro equipamento leva ao stage)
+  const fullMovers = fullPhased && fp.step1With.some((k) => k !== 'forklift' && unitsOf(k) > 0);
+  const sFull = fullPhased ? tvE(dTR) + lift + tvL(dTR) + (fullMovers ? 0 : tvE(dTS) + tvL(dTS)) : tvE(dRS) + lift + tvL(dRS);
+  const lamFull = { avg: fullPal / 3600, peak: fullPal / 3600 };
   const triLoad = (key: 'avg' | 'peak') => (triageByFork ? lamIn[key] * cs.pDamaged : 0);
   const mixS = (a: { avg: number; peak: number }, b: { avg: number; peak: number }, key: 'avg' | 'peak') => {
-    const l = a[key] + b[key] + triLoad(key);
-    return l > 0 ? (a[key] * sIn + b[key] * sOut + triLoad(key) * sTri) / l : sIn;
+    const l = a[key] + b[key] + triLoad(key) + lamFull[key];
+    return l > 0 ? (a[key] * sIn + b[key] * sOut + triLoad(key) * sTri + lamFull[key] * sFull) / l : sIn;
   };
   // variabilidade do serviço (aprox.): soma de variâncias das componentes estocásticas
   const varS = distScv(ops.unloadPallet) * distMean(ops.unloadPallet) ** 2 + distScv(ops.putawayPosition) * distMean(ops.putawayPosition) ** 2 + distScv(ops.loadPallet) * distMean(ops.loadPallet) ** 2 + (0.35 * (tvE(dIn) + tvL(dIn))) ** 2;
@@ -181,10 +256,10 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
     };
   };
   const rows: ResourceRow[] = [];
-  rows.push(mkRow('forklift', 'Empilhadeiras', 'unid.', fk.count, fk.availability, lamIn.avg + lamOut.avg + triLoad('avg'), lamIn.peak + lamOut.peak + triLoad('peak'), mixS(lamIn, lamOut, 'avg'), mixS(lamIn, lamOut, 'peak'), scvF, ca2Eff,
-    `Tarefa média ${mixS(lamIn, lamOut, 'avg').toFixed(0)} s (entrada ${sIn.toFixed(0)} s, saída ${sOut.toFixed(0)} s); chegadas em lote (IDC≈${ca2F.toFixed(1)}).${phased ? ' Armazenagem faseada: a empilhadeira faz a etapa 2' + (step1Movers ? '' : ' e também a etapa 1 (sem equipamento de etapa 1)') + '.' : ''}${shareFkUnload < 1 ? ` ${(100 * (1 - shareFkUnload)).toFixed(0)}% da descarga é feita por outros equipamentos.` : ''}${triageByFork ? ' Inclui o transporte das avarias à triagem.' : ''}`));
+  rows.push(mkRow('forklift', 'Empilhadeiras', 'unid.', fk.count, fk.availability, lamIn.avg + lamOut.avg + triLoad('avg') + lamFull.avg, lamIn.peak + lamOut.peak + triLoad('peak') + lamFull.peak, mixS(lamIn, lamOut, 'avg'), mixS(lamIn, lamOut, 'peak'), scvF, ca2Eff,
+    `Tarefa média ${mixS(lamIn, lamOut, 'avg').toFixed(0)} s (entrada ${sIn.toFixed(0)} s, saída ${sOut.toFixed(0)} s${stageOut ? ', carregando a partir do stage' : ''}${fullOn ? `, palete full ${sFull.toFixed(0)} s` : ''}); chegadas em lote (IDC≈${ca2F.toFixed(1)}).${phased ? ' Armazenagem faseada: a empilhadeira faz a etapa 2' + (step1Movers ? '' : ' e também a etapa 1 (sem equipamento de etapa 1)') + '.' : ''}${shareFkUnload < 1 ? ` ${(100 * (1 - shareFkUnload)).toFixed(0)}% da descarga é feita por outros equipamentos.` : ''}${triageByFork ? ' Inclui o transporte das avarias à triagem.' : ''}`));
 
-  // workers (picking): serviço por pedido
+  // operários: picking (legado por pedido ou por palete com rota) + etapas da expedição feitas por operários
   const nLines = sc.linesPerOrder.mean;
   const cartons = sc.cartonsPerLine.mean;
   const wk = sc.workers;
@@ -194,8 +269,19 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
   const induct_t = w.conveyors.length ? (cartons * nLines * sc.conveyorSpacing) / (w.conveyors[0].speed || 0.6) : cartons * nLines * 1.5;
   const sOrd = pickT + walkT + induct_t;
   const scvO = Math.max(0.15, (distScv(ops.pickCarton) / Math.max(1, cartons * nLines)) + 0.25);
-  rows.push(mkRow('worker', 'Operários (picking)', 'pessoas', wk.count, wk.availability, ord.avg / 3600, ord.peak / 3600, sOrd, sOrd, scvO, 1,
-    `Pedido médio: ${nLines.toFixed(1)} linhas × ${cartons.toFixed(1)} caixas; ${sOrd.toFixed(0)} s por pedido (picking ${pickT.toFixed(0)} s + deslocamento ${walkT.toFixed(0)} s).`));
+  const wCls: Cls[] = [];
+  if (pickOn && prof) wCls.push({ lam: { avg: (ord.avg * prof.partsPerOrder) / 3600, peak: (ord.peak * prof.partsPerOrder) / 3600 }, s: prof.partSec });
+  else if (!pickOn) wCls.push({ lam: { avg: ord.avg / 3600, peak: ord.peak / 3600 }, s: sOrd });
+  const wExp = expClasses('worker');
+  wCls.push(...wExp);
+  const wAgg = aggCls(wCls);
+  {
+    const pickTxt = pickOn && prof
+      ? `Picking por palete: ${prof.boxesPerOrder.toFixed(0)} caixas por pedido em ${prof.partsPerOrder.toFixed(1)} rota(s), ${prof.partSec.toFixed(0)} s por rota (${pk.route === 'u' ? 'em U' : 'zigue-zague'}; em U ${prof.uPartSec.toFixed(0)} s × zigue-zague ${prof.zPartSec.toFixed(0)} s), ${prof.palletsPerOrder.toFixed(1)} palete(s) por pedido`
+      : !pickOn ? `Pedido médio: ${nLines.toFixed(1)} linhas × ${cartons.toFixed(1)} caixas; ${sOrd.toFixed(0)} s por pedido (picking ${pickT.toFixed(0)} s + deslocamento ${walkT.toFixed(0)} s)` : 'Picking por palete sem endereços de coleta';
+    rows.push(mkRow('worker', pickOn ? 'Operários (separação / expedição)' : 'Operários (picking)', 'pessoas', wk.count, wk.availability, wAgg.la, wAgg.lp, wAgg.sa, wAgg.sp || wAgg.sa, pickOn ? 0.35 : scvO, 1,
+      `${pickTxt}${wExp.length ? `; expedição: ${wExp.map((c) => `${(c.lam.avg * 3600).toFixed(1)}/h × ${c.s.toFixed(0)} s`).join(', ')}` : ''}.`));
+  }
 
   // docas
   const cEffIn = Math.max(1, Math.min(bIn.mean, fk.count * fk.availability * 0.5));
@@ -204,9 +290,21 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
   const dockSIn = sc.vehicleExclusive ? vIn.dockSec + tvE(dIn) + bIn.mean * insideIn : vIn.dockSec + (bIn.mean * (tvE(dIn) + insideIn)) / cEffIn;
   const cEffOut = Math.max(1, Math.min(bOut.mean, fk.count * fk.availability * 0.5));
   const insideOut = distMean(ops.loadPallet) + tvE(depthOutM) + tvL(depthOutM);
-  const dockSOut = sc.vehicleExclusive ? vOut.dockSec + tvE(dOut) + lift + tvL(dOut) + bOut.mean * insideOut : vOut.dockSec + (bOut.mean * sOut) / cEffOut;
+  // carga a partir do stage: espera pela carga completa (se a separação é mais lenta que os caminhões) + etapas da expedição + embarque
+  const loadReady = stageOut && supply.avg > 0 && supply.avg < demandPal.avg ? (nLoad * 3600) / supply.avg : 0;
+  let expPre = 0; // etapas antes do embarque (os paletes continuam no stage)
+  let expClose = 0; // registro, lacre e tarefas depois de embarcar
+  for (const st of exSteps) {
+    if (st.type === 'conference') expPre += st.timing === 'later' ? parSec(Math.round(nLoad), confSec, st.resource) : 0;
+    else if (st.type === 'reconcile') expPre += distMean(st.time) + st.divergencePct * distMean(st.correctionTime);
+    else if (st.type === 'customize') expPre += parSec(Math.round(nLoad * st.pickPct), distMean(st.time), st.resource);
+    else if (st.type !== 'board') expClose += distMean(st.time);
+  }
+  const expDock = expPre + expClose;
+  const boardLeg = stageOut ? tvE(dSD) + tvL(dSD) : tvE(dOut) + lift + tvL(dOut);
+  const dockSOut = (sc.vehicleExclusive ? vOut.dockSec + boardLeg + bOut.mean * insideOut : vOut.dockSec + (bOut.mean * sOut) / cEffOut) + loadReady + expDock;
   rows.push(mkRow('dockIn', 'Docas de recebimento', 'docas', w.docksIn.length, 1, tin.avg / 3600, tin.peak / 3600, dockSIn, dockSIn, 0.3, 1, `Ocupação por caminhão ≈ ${(dockSIn / 60).toFixed(0)} min (manobra + descarga com ${cEffIn.toFixed(1)} empilhadeiras efetivas).`));
-  rows.push(mkRow('dockOut', 'Docas de expedição', 'docas', w.docksOut.length, 1, tout.avg / 3600, tout.peak / 3600, dockSOut, dockSOut, 0.3, 1, `Ocupação por caminhão ≈ ${(dockSOut / 60).toFixed(0)} min.`));
+  rows.push(mkRow('dockOut', 'Docas de expedição', 'docas', w.docksOut.length, 1, tout.avg / 3600, tout.peak / 3600, dockSOut, dockSOut, 0.3, 1, `Ocupação por caminhão ≈ ${(dockSOut / 60).toFixed(0)} min${stageOut ? ` (carga de ${nLoad.toFixed(0)} paletes: ${loadReady > 0 ? `espera pelos paletes separados ${(loadReady / 60).toFixed(0)} min + ` : ''}etapas ${(expDock / 60).toFixed(0)} min + embarque)` : ''}.`));
 
   // esteiras (capacidade em caixas/h)
   if (w.conveyors.length) {
@@ -222,7 +320,7 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
   }
 
   /* ---- recebimento, armazenagem faseada e AMR (estimativas) ---- */
-  const lamTot = (l: { avg: number; peak: number }, key: 'avg' | 'peak') => l[key] + lamOut[key] + triLoad(key);
+  const lamTot = (l: { avg: number; peak: number }, key: 'avg' | 'peak') => l[key] + lamOut[key] + triLoad(key) + lamFull[key];
   const fkM = (key: 'avg' | 'peak') => ggcMetrics(Math.max(fk.count, 0.0001), lamTot(lamIn, key) / fk.availability, mixS(lamIn, lamOut, key), scvF, ca2Eff);
   const wqFk = (key: 'avg' | 'peak') => {
     const m = fkM(key);
@@ -251,11 +349,14 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
 
   // conferentes: conferência + triagem por palete (avaria aumenta o tempo)
   let chkM: ReturnType<typeof ggcMetrics> | null = null;
+  const chkExp = staged ? expClasses('checker') : [];
   if (staged) {
     const sChk = Math.max(1, cs.serviceMean);
-    rows.push(mkRow('checker', 'Conferentes', 'pessoas', sc.checkers.count, sc.checkers.availability, lamIn.avg, lamIn.peak, sChk, sChk, Math.max(0.05, cs.serviceScv), idcIn,
-      `Estimativa: ${sChk.toFixed(0)} s por palete (conferência ${distMean(ops.checkPallet).toFixed(0)} s${cs.pDamaged > 0 ? `; ${(cs.pDamaged * 100).toFixed(1)}% avariados com +${((sc.receiving.damagedCheckFactor - 1) * 100).toFixed(0)}% de tempo e triagem de ~${cs.meanBadPartial.toFixed(0)} caixas × ${distMean(ops.triageCarton).toFixed(0)} s` : ''}).`));
-    chkM = ggcMetrics(Math.max(sc.checkers.count, 0.0001), lamIn.avg / sc.checkers.availability, sChk, Math.max(0.05, cs.serviceScv), idcIn);
+    const cAgg = aggCls([{ lam: lamIn, s: sChk }, ...chkExp]);
+    const scvC = chkExp.length ? 0.5 : Math.max(0.05, cs.serviceScv);
+    rows.push(mkRow('checker', 'Conferentes', 'pessoas', sc.checkers.count, sc.checkers.availability, cAgg.la, cAgg.lp, cAgg.sa, cAgg.sp, scvC, idcIn,
+      `Estimativa: recebimento ${sChk.toFixed(0)} s por palete (conferência ${distMean(ops.checkPallet).toFixed(0)} s${cs.pDamaged > 0 ? `; ${(cs.pDamaged * 100).toFixed(1)}% avariados com +${((sc.receiving.damagedCheckFactor - 1) * 100).toFixed(0)}% de tempo e triagem de ~${cs.meanBadPartial.toFixed(0)} caixas × ${distMean(ops.triageCarton).toFixed(0)} s` : ''})${chkExp.length ? `; expedição: ${chkExp.map((c) => `${(c.lam.avg * 3600).toFixed(1)}/h × ${c.s.toFixed(0)} s`).join(', ')}` : ''}.`));
+    chkM = ggcMetrics(Math.max(sc.checkers.count, 0.0001), cAgg.la / sc.checkers.availability, cAgg.sa, scvC, idcIn);
   }
 
   // equipamentos sem elevação: etapa 1 da faseada, transporte das avarias e descarga (quando permitida)
@@ -264,13 +365,15 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
     const classes: { lam: number; lamPk: number; s: number }[] = [];
     if (phased && step1Movers) classes.push({ lam: lamIn.avg * (1 - cs.pDamaged * cs.pWhole), lamPk: lamIn.peak * (1 - cs.pDamaged * cs.pWhole), s: tvEm(dST) + tvLm(dST) });
     if (staged && cs.pDamaged > 0) classes.push({ lam: lamIn.avg * cs.pDamaged, lamPk: lamIn.peak * cs.pDamaged, s: tvEm(dStageTri) + tvLm(dStageTri) });
+    if (fullMovers) classes.push({ lam: lamFull.avg, lamPk: lamFull.peak, s: tvEm(dTS) + tvLm(dTS) });
+    if (stageOut && shareFkLoad < 1) classes.push({ lam: (flow('avg') * (1 - shareFkLoad)) / 3600, lamPk: (flow('peak') * (1 - shareFkLoad)) / 3600, s: tvEm(dSD) + tvLm(dSD) + distMean(ops.loadPallet) + tvEm(depthOutM) + tvLm(depthOutM) });
     if (shareMoverUnload > 0) classes.push({ lam: lamIn.avg * shareMoverUnload, lamPk: lamIn.peak * shareMoverUnload, s: unloadT + tvEm(depthM) + tvLm(depthM) + tvEm(2.5) + tvLm(2.5) });
     const lamA = classes.reduce((a, c) => a + c.lam, 0);
     const lamP = classes.reduce((a, c) => a + c.lamPk, 0);
     if (lamA > 0) {
       const sA = classes.reduce((a, c) => a + c.lam * c.s, 0) / lamA;
       const sP = lamP > 0 ? classes.reduce((a, c) => a + c.lamPk * c.s, 0) / lamP : sA;
-      const parts = [phased && step1Movers ? 'etapa 1' : '', staged && cs.pDamaged > 0 ? 'avarias → triagem' : '', shareMoverUnload > 0 ? 'descarga' : ''].filter(Boolean).join(' + ');
+      const parts = [phased && step1Movers ? 'etapa 1' : '', fullMovers ? 'palete full → stage' : '', stageOut && shareFkLoad < 1 ? 'carga do stage' : '', staged && cs.pDamaged > 0 ? 'avarias → triagem' : '', shareMoverUnload > 0 ? 'descarga' : ''].filter(Boolean).join(' + ');
       // 1ª passada (sem carga) estima a utilização; dela sai o tempo do AMR em carga, que reduz a disponibilidade
       const util0 = (lamA * sA) / Math.max(1e-9, moverUnits * mvAvailAt(0));
       amrChargeShare = amrShareAt(Math.min(1, util0));
@@ -290,9 +393,35 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
       `cada palete fica ~${(wStage / 60).toFixed(1)} min no stage (fila do conferente ${(wqC(chkM) / 60).toFixed(1)} min + conferência/triagem ${(sChk / 60).toFixed(1)} min + espera pela empilhadeira); o pico considera o lote de ~${Bq.toFixed(0)} paletes de um caminhão (percentil ${(sc.serviceLevel * 100).toFixed(0)}%) mais os que chegam enquanto ele é conferido.`));
   }
 
+  // balanço entre o que a separação entrega ao stage de expedição e o que os caminhões levam
+  if (stageOut) {
+    const rA = supply.avg > 0 ? demandPal.avg / supply.avg : Infinity;
+    const rP = supply.peak > 0 ? demandPal.peak / supply.peak : Infinity;
+    const hasSrc = supply.avg > 0;
+    rows.push({
+      key: 'supply', name: 'Separação × carga de saída', unit: 'paletes/h', current: supply.avg, requiredAvg: Math.ceil(demandPal.avg), requiredPeak: Math.ceil(demandPal.peak),
+      demandPerHourAvg: demandPal.avg, demandPerHourPeak: demandPal.peak, capacityPerHour: supply.avg, rhoAvg: rA, rhoPeak: rP, waitP95MinPeak: 0, meanServiceSec: supply.avg > 0 ? 3600 / supply.avg : 0,
+      note: !hasSrc ? 'Nenhum palete chega ao stage de expedição: ative a separação por palete e/ou o palete full, senão os caminhões esperam para sempre.'
+        : `Entregam ao stage ${supply.avg.toFixed(1)} paletes/h (picking ${pickPal.avg.toFixed(1)} + full ${fullPal.toFixed(1)}); os caminhões levam ${demandPal.avg.toFixed(1)} paletes/h (${tout.avg.toFixed(2)} caminhões/h × ${nLoad.toFixed(0)}). ${rA > 1.05 ? 'A demanda supera a separação: os caminhões esperam a carga.' : rA < 0.8 ? 'A separação supera a carga: o stage acumula paletes.' : 'Fluxos equilibrados.'}`,
+      status: !hasSrc || rA > 1.05 ? 'critico' : rA < 0.8 ? 'atencao' : 'ok',
+    });
+  }
+
+  // stage de expedição: paletes entre a chegada da separação e o embarque (Little)
+  if (stageOut && w.stagesOut.length) {
+    const form = supply.avg > 0 ? (nLoad * 3600) / supply.avg / 2 : 0; // metade do tempo de formar a carga
+    const boardSec = boardLeg + bOut.mean * insideOut;
+    const confW = exSteps.some((x) => x.type === 'conference' && x.timing === 'simultaneous') ? confSec * 1.5 : 0;
+    const wOut = form + confW + expPre + boardSec / 2;
+    const concOut = Math.min(Math.max(1, w.docksOut.length), 1 + (tout.peak / 3600) * dockSOut);
+    const capOut = w.stagesOut.reduce((n, x) => n + x.capacity, 0);
+    rows.push(spaceRow('stageOut', 'Stage de expedição', 'paletes', capOut, flow('avg') / 3600, flow('peak') / 3600, wOut, wOut * 1.5, 1, nLoad * concOut,
+      `cada palete fica ~${(wOut / 60).toFixed(1)} min no stage (formação da carga ${(form / 60).toFixed(1)} min${confW ? ` + conferência ${(confW / 60).toFixed(1)} min` : ''} + etapas antes do embarque ${(expPre / 60).toFixed(1)} min + embarque); o pico garante ${nLoad.toFixed(0)} paletes por carga em até ${concOut.toFixed(1)} carga(s) simultânea(s).`));
+  }
+
   // endereços transitórios (faseada): do depósito na rua até a empilhadeira pegar
   if (phased && w.transits.length) {
-    const lamS = (key: 'avg' | 'peak') => lamIn[key] * (1 - cs.pDamaged * cs.pWhole);
+    const lamS = (key: 'avg' | 'peak') => lamIn[key] * (1 - cs.pDamaged * cs.pWhole) + (fullPhased ? lamFull[key] : 0);
     const wT = wqFk('avg') + tvE(dTR);
     const drainT = (Bq * (tvE(dTR) + tvL(dTR) + lift)) / Math.max(1, fk.count * fk.availability);
     rows.push(spaceRow('transit', 'Endereços transitórios (ruas)', 'paletes', w.transits.reduce((n, x) => n + x.capacity, 0), lamS('avg'), lamS('peak'), wT, Math.max(wT, wqFk('peak') + tvE(dTR)), idcIn, Bq * (1 - cs.pDamaged * cs.pWhole) * concurrent(drainT),
@@ -381,6 +510,9 @@ export function analyzeCapacity(sc: Scenario, layout: Layout, world?: World): Ca
       'Descarga (estimativa): a parcela feita por empilhadeira é proporcional ao número de unidades permitidas; a distância dentro do baú usa a profundidade média por tipo de veículo.',
       'Armazenagem faseada (estimativa): a empilhadeira faz a etapa 2 (do transitório ao endereço) e, sem equipamento de etapa 1, também a etapa 1; os transitórios são tratados em conjunto, sem desequilíbrio entre ruas.',
       'Stage, transitórios e triagem: ocupação por Little (L=λ·W) com folga de lote (IDC) no dimensionamento; a triagem acumula até a coleta periódica.',
+      'Separação por palete (estimativa): amostra 40 pedidos com semente fixa (mesmas regras de sorteio de caixas, curvas A/B/C e posições da simulação), planeja a rota em U e em zigue-zague, e soma manuseio (leitura + pegar + colocar), deslocamento, viagens de palete cheio ao stage e furos de estoque por rota de um separador; os pedidos são divididos entre os separadores por rua.',
+      'Palete full (estimativa): a empilhadeira retira do endereço e leva ao stage (faseada: baixa no transitório e outro equipamento leva ao stage); a taxa é pedidos/h × paletes por pedido × fator de demanda.',
+      'Expedição (estimativa): com carga a partir do stage ou expedição por etapas, o fluxo no stage é o menor entre a oferta da separação e a demanda dos caminhões; o conferente/operário recebe, por carga, conferência (por palete), batimento (+ divergência), customização (pickPct × paletes), registro, lacre e tarefas; o embarque usa a distância stage → doca e o trabalho em série dentro do baú; a doca de saída fica ocupada também enquanto espera a carga ficar pronta.',
       'AMR (estimativa): o tempo em carga/setup (ciclo a cada fração da autonomia + cargas por calendário) é descontado da disponibilidade; vagas de carga pela média e pelo pico (calendário junta todos).',
     ],
   };
