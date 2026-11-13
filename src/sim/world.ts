@@ -288,7 +288,9 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
       const anyUnits = (kinds: string[]) => kinds.some((k) => units(k) > 0);
       for (const s of def.steps) {
         if (!('with' in s) || s.with.length === 0 || anyUnits(s.with)) continue;
-        out.push({ level: 'aviso', msg: `Processo "${def.name}": nenhum recurso de "${s.label || STEP_LABEL[s.type]}" tem quantidade > 0; a empilhadeira fará o trabalho.` });
+        // tarefas de pessoa não caem para a empilhadeira: sem pessoas cadastradas o tempo passa livre
+        const fallback = s.type === 'task' ? 'o tempo da tarefa passa sem recurso (sem pessoas cadastradas)' : 'a empilhadeira fará o trabalho';
+        out.push({ level: 'aviso', msg: `Processo "${def.name}": nenhum recurso de "${s.label || STEP_LABEL[s.type]}" tem quantidade > 0; ${fallback}.` });
       }
       if (sc.storage.mode === 'phased') out.push({ level: 'aviso', msg: 'Com processos personalizados, a armazenagem faseada é definida pelos blocos do processo (movimentar até a rua + elevar); o modo global não tem efeito.' });
     }

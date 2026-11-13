@@ -187,3 +187,14 @@ describe('separação e expedição como processos em blocos', () => {
     expect(got[1].steps.some((s) => s.type === 'move' && s.to.kind === 'stageOut')).toBe(true);
   });
 });
+
+describe('avisos de recursos nos blocos de pessoa', () => {
+  it('tarefa de pessoa sem pessoas cadastradas não diz que a empilhadeira faz o trabalho', () => {
+    const sc = custom(expSc(), 'exp-padrao');
+    sc.checkers.count = 0;
+    sc.workers.count = 0;
+    const msgs = validate(layout, sc).map((i) => i.msg).join(' | ');
+    expect(msgs).toMatch(/o tempo da tarefa passa sem recurso/);
+    expect(msgs).not.toMatch(/Conferir cada palete.*empilhadeira fará/);
+  });
+});
