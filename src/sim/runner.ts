@@ -55,6 +55,9 @@ export function runExperiment(sc: Scenario, layout: Layout, onProgress?: (done: 
       trucks: reps.reduce((s, r) => s + (r.vehicleStats[i]?.trucks ?? 0), 0) / reps.length,
       dockTurnMean: reps.reduce((s, r) => s + (r.vehicleStats[i]?.dockTurnMean ?? 0), 0) / reps.length,
       dockWaitMean: reps.reduce((s, r) => s + (r.vehicleStats[i]?.dockWaitMean ?? 0), 0) / reps.length,
+      trucksOut: reps.reduce((s, r) => s + (r.vehicleStats[i]?.trucksOut ?? 0), 0) / reps.length,
+      dockTurnOutMean: reps.reduce((s, r) => s + (r.vehicleStats[i]?.dockTurnOutMean ?? 0), 0) / reps.length,
+      dockWaitOutMean: reps.reduce((s, r) => s + (r.vehicleStats[i]?.dockWaitOutMean ?? 0), 0) / reps.length,
     })),
     elapsedMs: Date.now() - t0,
   };

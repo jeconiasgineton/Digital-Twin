@@ -145,11 +145,16 @@ export interface SkuSpec {
 export interface VehicleType {
   id: string;
   name: string;
-  /** participação na frota que chega (normalizada; vale para recebimento e expedição) */
+  /** participação na frota (normalizada); vale para recebimento e expedição, salvo se shareIn/shareOut forem informados */
   share: number;
+  /** participação própria no recebimento / na expedição (vazio = usa `share`) */
+  shareIn?: number;
+  shareOut?: number;
+  /** quantos paletes o baú comporta */
+  capacityPallets: number;
   /** tempo de manobra/docagem (s) */
   dockTurnover: Dist;
-  /** paletes por veículo */
+  /** paletes por veículo quando carregado/descarregado (média e desvio; nunca passa da capacidade) */
   pallets: { mean: number; sd: number; max: number };
   /** comprimento do baú (m): distância de movimentação dentro do baú (usada no recebimento) */
   trailerLengthM: number;
@@ -405,6 +410,10 @@ export interface VehicleStat {
   trucks: number; // por dia
   dockTurnMean: number; // manobra média (min)
   dockWaitMean: number; // espera média por doca (min)
+  /** expedição */
+  trucksOut: number;
+  dockTurnOutMean: number;
+  dockWaitOutMean: number;
 }
 
 export interface HourSeries {

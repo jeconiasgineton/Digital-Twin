@@ -14,13 +14,36 @@ export const defaultArrival = (): ArrivalSpec => ({
 export const defaultCalendar = (): WorkCalendar => ({ breaks: [], amrWorksDuringBreaks: true });
 
 let vSeq = 0;
-/** presets de veículo: tempos de docagem típicos (carreta mais lenta que truck) */
-export function presetVehicle(kind: 'carreta' | 'truck' | 'vuc'): VehicleType {
+export type VehicleKind = 'carreta' | 'truque' | 'truck' | 'toco' | 'vuc' | 'picape' | 'novo';
+
+/**
+ * Tipos conhecidos de veículo de carga. Capacidades em paletes (PBR 1,0 × 1,2 m): carreta 28 (referência definida
+ * no projeto); toco 12, truque 16 e ¾/VUC 6 de tabelas de lotação de transportadoras (fontes de baixa autoridade);
+ * baús e a picape (1 palete) são premissas. Participações e tempos de docagem também são premissas editáveis.
+ */
+export const VEHICLE_PRESETS: Record<Exclude<VehicleKind, 'truck'>, Omit<VehicleType, 'id'>> = {
+  carreta: { name: 'Carreta', share: 0.4, shareIn: 0.45, shareOut: 0.25, dockTurnover: tri(120, 180, 300), capacityPallets: 28, pallets: { mean: 24, sd: 3, max: 28 }, trailerLengthM: 13.6 },
+  truque: { name: 'Truque', share: 0.3, shareIn: 0.3, shareOut: 0.3, dockTurnover: tri(60, 90, 150), capacityPallets: 16, pallets: { mean: 14, sd: 2, max: 16 }, trailerLengthM: 8.5 },
+  toco: { name: 'Toco', share: 0.2, shareIn: 0.15, shareOut: 0.25, dockTurnover: tri(45, 70, 120), capacityPallets: 12, pallets: { mean: 10, sd: 1.5, max: 12 }, trailerLengthM: 6.5 },
+  vuc: { name: 'VUC (3/4)', share: 0.07, shareIn: 0.07, shareOut: 0.15, dockTurnover: tri(30, 45, 90), capacityPallets: 6, pallets: { mean: 5, sd: 1, max: 6 }, trailerLengthM: 4.5 },
+  picape: { name: 'Picape', share: 0.03, shareIn: 0.03, shareOut: 0.05, dockTurnover: tri(20, 30, 60), capacityPallets: 1, pallets: { mean: 1, sd: 0, max: 1 }, trailerLengthM: 1.8 },
+  novo: { name: 'Novo veículo', share: 0.1, dockTurnover: tri(60, 90, 150), capacityPallets: 10, pallets: { mean: 8, sd: 1, max: 10 }, trailerLengthM: 6 },
+};
+
+/** cria um tipo a partir de um modelo conhecido ("truck" é sinônimo de "truque") */
+export function presetVehicle(kind: VehicleKind): VehicleType {
   const id = `v${Date.now().toString(36)}${vSeq++}`;
-  if (kind === 'carreta') return { id, name: 'Carreta', share: 0.5, dockTurnover: tri(120, 180, 300), pallets: { mean: 26, sd: 4, max: 33 }, trailerLengthM: 14 };
-  if (kind === 'truck') return { id, name: 'Truck', share: 0.4, dockTurnover: tri(40, 60, 120), pallets: { mean: 12, sd: 2, max: 14 }, trailerLengthM: 8 };
-  return { id, name: 'VUC', share: 0.1, dockTurnover: tri(30, 45, 90), pallets: { mean: 5, sd: 1, max: 6 }, trailerLengthM: 5 };
+  const p = VEHICLE_PRESETS[kind === 'truck' ? 'truque' : kind];
+  return { id, ...JSON.parse(JSON.stringify(p)) } as VehicleType;
 }
+
+/** catálogo que já vem no cenário: carreta, truque, toco, VUC e picape */
+export function defaultVehicleTypes(): VehicleType[] {
+  return (['carreta', 'truque', 'toco', 'vuc', 'picape'] as const).map((k) => ({ id: k, ...JSON.parse(JSON.stringify(VEHICLE_PRESETS[k])) }) as VehicleType);
+}
+
+/** participação do tipo num sentido (a própria, se informada, senão a geral) */
+export const shareFor = (v: VehicleType, dir: 'in' | 'out'): number => Math.max(0, (dir === 'in' ? v.shareIn : v.shareOut) ?? v.share);
 
 export function defaultBreak(kind: 'almoco' | 'cafe' = 'almoco'): BreakSpec {
   return kind === 'almoco'
@@ -31,21 +54,29 @@ export function defaultBreak(kind: 'almoco' | 'cafe' = 'almoco'): BreakSpec {
 /** tipos efetivos: os cadastrados ou, se não houver, um tipo único com os parâmetros gerais */
 export function effectiveVehicles(sc: Scenario, dir: 'in' | 'out'): VehicleType[] {
   if (sc.vehicleTypes.length) return sc.vehicleTypes;
-  return [{ id: 'padrao', name: 'Caminhão', share: 1, dockTurnover: sc.ops.dockTurnover, pallets: dir === 'in' ? sc.palletsPerTruckIn : sc.palletsPerTruckOut, trailerLengthM: 14 }];
+  const pl = dir === 'in' ? sc.palletsPerTruckIn : sc.palletsPerTruckOut;
+  return [{ id: 'padrao', name: 'Caminhão', share: 1, dockTurnover: sc.ops.dockTurnover, capacityPallets: pl.max, pallets: pl, trailerLengthM: 14 }];
+}
+
+/** paletes de uma carga expedida: capacidade do baú × ocupação (com tipos cadastrados) ou a quantidade fixa da expedição por etapas */
+export function loadPallets(sc: Scenario, v: VehicleType): number {
+  if (sc.expedition.mode === 'basic') return Math.min(v.pallets.mean, v.capacityPallets);
+  return sc.vehicleTypes.length ? Math.max(1, Math.round(v.capacityPallets * sc.expedition.loadOccupancy)) : Math.max(1, Math.round(sc.expedition.palletsPerLoad));
 }
 
 /** médias ponderadas pela participação: paletes por veículo e tempo de docagem (s) */
 export function vehicleMeans(sc: Scenario, dir: 'in' | 'out'): { pallets: number; dockSec: number; depthM: number } {
   const vs = effectiveVehicles(sc, dir);
-  const tot = vs.reduce((s, v) => s + Math.max(0, v.share), 0) || 1;
+  const tot = vs.reduce((s, v) => s + shareFor(v, dir), 0) || 1;
   let pallets = 0;
   let dock = 0;
   let depth = 0;
   for (const v of vs) {
-    const w = Math.max(0, v.share) / tot;
-    pallets += w * v.pallets.mean;
+    const w = shareFor(v, dir) / tot;
+    const n = dir === 'out' ? loadPallets(sc, v) : Math.min(v.pallets.mean, v.capacityPallets);
+    pallets += w * n;
     dock += w * distMean(v.dockTurnover);
-    depth += w * meanTrailerDepth(v.pallets.mean, v.trailerLengthM);
+    depth += w * meanTrailerDepth(n, v.trailerLengthM);
   }
   return { pallets, dockSec: dock, depthM: depth };
 }

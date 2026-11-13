@@ -25,6 +25,7 @@ const base = (n = 8): Scenario => {
   sc.picking.full = { ordersPerHour: 12, palletsPerOrder: { mean: 4, sd: 0 }, abc: { a: 0.7, b: 0.2, c: 0.1 }, mode: 'direct', step1With: ['palletTruck', 'palletJack', 'amr'] };
   sc.arrivalsOut = { ...sc.arrivalsOut, mode: 'fixed', intervalMin: 60, delayProb: 0 };
   sc.outboundTrucksPerHour = new Array(24).fill(0);
+  sc.vehicleTypes = []; // sem tipos cadastrados a carga é a quantidade fixa de paletes por carga
   sc.expedition = { ...defaultExpedition(), mode: 'standard', palletsPerLoad: n };
   return sc;
 };

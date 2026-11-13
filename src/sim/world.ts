@@ -1,6 +1,8 @@
 import type { EquipmentKind, Layout, LayoutElement, Scenario } from '../model/types';
 import { arrivalProfile } from '../model/traffic';
 import { validateEquipment } from '../model/equipment';
+import { capacityByLength } from '../model/receiving';
+import { shareFor } from '../model/traffic';
 import { STEP_LABEL, validateProcess } from '../model/process';
 import { EXP_LABEL, effectiveSteps, validateExpedition } from '../model/expedition';
 import { aisleCodeOf, aisleOf, areaCapacity } from '../model/areas';
@@ -295,6 +297,15 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
     const transitCodes = new Set(layout.elements.filter((e) => e.type === 'transit').map((t) => aisleOf(t, aisles)).filter(Boolean));
     if (!aisles.length) out.push({ level: 'aviso', msg: 'Armazenagem faseada sem ruas no layout (ferramenta "Rua"): os endereços não terão rua.' });
     for (const c of codes) if (!transitCodes.has(c)) out.push({ level: 'aviso', msg: `A rua "${c}" não tem endereço transitório: a etapa 1 levará o palete direto ao destino, sem limite de espaço.` });
+  }
+  for (const v of sc.vehicleTypes) {
+    if (v.capacityPallets < 1) out.push({ level: 'erro', msg: `Veículo "${v.name}": a capacidade precisa ser de ao menos 1 palete.` });
+    if (v.pallets.mean > v.capacityPallets) out.push({ level: 'aviso', msg: `Veículo "${v.name}": a média de ${v.pallets.mean} paletes passa da capacidade (${v.capacityPallets}); será limitada à capacidade.` });
+    if (v.capacityPallets > capacityByLength(v.trailerLengthM) * 1.15) out.push({ level: 'aviso', msg: `Veículo "${v.name}": um baú de ${v.trailerLengthM} m comporta cerca de ${capacityByLength(v.trailerLengthM)} paletes PBR (2 por fileira de 1 m), mas a capacidade é ${v.capacityPallets}. Confira o comprimento ou a capacidade.` });
+  }
+  if (sc.vehicleTypes.length) {
+    if (sc.vehicleTypes.every((v) => shareFor(v, 'in') <= 0)) out.push({ level: 'erro', msg: 'Veículos: nenhum tipo tem participação no recebimento.' });
+    if (sc.vehicleTypes.every((v) => shareFor(v, 'out') <= 0)) out.push({ level: 'erro', msg: 'Veículos: nenhum tipo tem participação na expedição.' });
   }
   const rc = sc.receiving;
   if (rc.damagePalletPct > 0 && sc.checkers.count < 1 && needIn)

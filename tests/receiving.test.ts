@@ -125,9 +125,9 @@ describe('avarias e triagem', () => {
 
 describe('descarga e baú', () => {
   it('distância no baú: 2 paletes por fileira de 1,2 m, limitada ao comprimento', () => {
-    expect(trailerDepthM(0, 14)).toBeCloseTo(0.6, 9);
-    expect(trailerDepthM(1, 14)).toBeCloseTo(0.6, 9);
-    expect(trailerDepthM(2, 14)).toBeCloseTo(1.8, 9);
+    expect(trailerDepthM(0, 14)).toBeCloseTo(0.5, 9);
+    expect(trailerDepthM(1, 14)).toBeCloseTo(0.5, 9);
+    expect(trailerDepthM(2, 14)).toBeCloseTo(1.5, 9);
     expect(trailerDepthM(60, 5)).toBe(5);
   });
   it('baú maior => descarga mais demorada (mesma frota)', () => {

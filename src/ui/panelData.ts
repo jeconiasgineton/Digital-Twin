@@ -3,7 +3,8 @@ import { EQUIPMENT_NAMES } from '../model/equipment';
 import { buildWorld, slotLabel } from '../sim/world';
 import { EXPEDITION_SOURCE, EXP_HELP, EXP_LABEL, defaultExpeditionSteps, makeExpStep, type ExpStep, type ExpStepType } from '../model/expedition';
 import { PICKING_SOURCE, ROUTE_LABEL, parseAddresses, type PickRoute } from '../model/picking';
-import { PEOPLE_ROLES, ROLE_NAMES, breakWaves, defaultBreak, presetVehicle } from '../model/traffic';
+import { PEOPLE_ROLES, ROLE_NAMES, breakWaves, defaultBreak, defaultVehicleTypes, presetVehicle, shareFor } from '../model/traffic';
+import { capacityByLength } from '../model/receiving';
 import { catalog, defaultEquipment, NIOSH_LOAD_KG } from '../model/equipment';
 import { hourlyProfile } from '../model/defaults';
 import { exportTemplate, importWorkbook } from '../io/excel';
@@ -237,19 +238,23 @@ function expStepCard(ctx: AppCtx, st: ExpStep, i: number, editable: boolean): HT
 function vehicleCard(ctx: AppCtx, v: VehicleType): HTMLElement {
   const sc = ctx.scenario;
   const ch = () => ctx.scenarioChanged();
-  return h('details', { open: true },
-    h('summary', null, `${v.name} · ${(v.share / Math.max(1e-9, sc.vehicleTypes.reduce((s, x) => s + x.share, 0)) * 100).toFixed(0)}% da frota`),
+  const pctOf = (dir: 'in' | 'out') => (shareFor(v, dir) / Math.max(1e-9, sc.vehicleTypes.reduce((s, x) => s + shareFor(x, dir), 0))) * 100;
+  const byLen = capacityByLength(v.trailerLengthM);
+  return h('details', { open: false },
+    h('summary', null, `${v.name} · ${v.capacityPallets} ${v.capacityPallets === 1 ? 'palete' : 'paletes'} · baú ${v.trailerLengthM} m · recebimento ${pctOf('in').toFixed(0)}% / expedição ${pctOf('out').toFixed(0)}%`),
     h('div', { class: 'body', style: { display: 'grid', gap: '7px' } },
       textField('Nome', () => v.name, (t) => ((v.name = t || v.name), ch(), ctx.rerender())),
-      numField('Participação (peso)', () => v.share, (x) => ((v.share = Math.max(0, x)), ch(), ctx.rerender()), { step: 0.05, min: 0, title: 'Normalizada pela soma de todos os tipos' }),
+      numField('Tamanho do baú (comprimento)', () => v.trailerLengthM, (x) => ((v.trailerLengthM = Math.max(1, x)), ch(), ctx.rerender()), { step: 0.5, min: 1, unit: 'm', title: 'Define a distância de movimentação dentro do baú (recebimento e expedição)' }),
+      numField('Capacidade (paletes que comporta)', () => v.capacityPallets, (x) => { v.capacityPallets = Math.max(1, Math.round(x)); v.pallets.max = v.capacityPallets; v.pallets.mean = Math.min(v.pallets.mean, v.capacityPallets); ch(); ctx.rerender(); }, { step: 1, min: 1 }),
+      h('p', { class: 'note' }, `Um baú de ${v.trailerLengthM} m comporta cerca de ${byLen} paletes PBR (1,0 × 1,2 m, 2 por fileira de 1 m).${v.capacityPallets > byLen * 1.15 ? ' ⚠ A capacidade informada é maior que isso: confira.' : ''}`),
+      numField('Paletes por veículo (média)', () => v.pallets.mean, (x) => ((v.pallets.mean = Math.min(v.capacityPallets, Math.max(1, x))), ch()), { step: 1, min: 1, title: 'Quantos paletes, em média, o veículo traz no recebimento (limitado à capacidade). Na expedição a carga é a capacidade × a ocupação da expedição.' }),
+      numField('… desvio', () => v.pallets.sd, (x) => ((v.pallets.sd = Math.max(0, x)), ch()), { step: 0.5, min: 0 }),
+      numField('Participação no recebimento (peso)', () => shareFor(v, 'in'), (x) => ((v.shareIn = Math.max(0, x)), ch(), ctx.rerender()), { step: 0.05, min: 0, title: 'Normalizada pela soma de todos os tipos no recebimento' }),
+      numField('Participação na expedição (peso)', () => shareFor(v, 'out'), (x) => ((v.shareOut = Math.max(0, x)), ch(), ctx.rerender()), { step: 0.05, min: 0, title: 'Normalizada pela soma de todos os tipos na expedição' }),
       h('table', null,
         h('thead', null, h('tr', null, ['Manobra/docagem (s)', 'Distrib.', 'p1', 'p2', 'p3'].map((t) => h('th', null, t)))),
         h('tbody', null, distRow(ctx, '', () => v.dockTurnover, (d) => ((v.dockTurnover = d), ch())))),
       h('p', { class: 'note' }, `≈ ${(distMeanOf(v.dockTurnover) / 60).toFixed(1)} min por manobra.`),
-      numField('Paletes por veículo (média)', () => v.pallets.mean, (x) => ((v.pallets.mean = Math.max(1, x)), ch()), { step: 1, min: 1 }),
-      numField('desvio', () => v.pallets.sd, (x) => ((v.pallets.sd = Math.max(0, x)), ch()), { step: 0.5, min: 0 }),
-      numField('máximo (capacidade)', () => v.pallets.max, (x) => ((v.pallets.max = Math.max(1, x)), ch()), { step: 1, min: 1 }),
-      numField('Comprimento do baú', () => v.trailerLengthM, (x) => ((v.trailerLengthM = Math.max(1, x)), ch()), { step: 0.5, min: 1, unit: 'm', title: 'Define a distância de movimentação dentro do baú no recebimento' }),
       h('button', { class: 'b danger sm', onclick: () => { sc.vehicleTypes = sc.vehicleTypes.filter((x) => x !== v); ch(); ctx.rerender(); } }, 'Remover tipo'),
     ),
   );
@@ -359,12 +364,14 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
       h('p', { class: 'note' }, 'Com a regra ligada, duas máquinas (ou dois operários com paleteira) não entram juntos no baú: só uma trabalha dentro e a próxima já se aproxima. O trabalho de dentro fica em série e ocupa mais a doca.'),
       numField('Limite de espera na doca (gargalo)', () => sc.dockWaitThresholdMin, (v) => ((sc.dockWaitThresholdMin = Math.max(0, v)), ch()), { step: 1, min: 0, unit: 'min', title: 'Caminhões que esperam mais que isso contam no indicador "% acima do limite"' }),
       h('b', null, 'Tipos de veículo'),
-      sc.vehicleTypes.length ? null : h('p', { class: 'note' }, 'Sem tipos cadastrados: todos os caminhões são iguais (paletes por caminhão e manobra gerais). Adicione tipos para diferenciar o tempo de docagem e a carga de cada veículo.'),
+      h('p', { class: 'note' }, sc.vehicleTypes.length
+        ? 'O catálogo vale para o recebimento e para a expedição: cada tipo tem tamanho do baú, capacidade em paletes, tempo de docagem e participação própria em cada sentido. Fontes: capacidade da carreta (28) definida no projeto; toco 12, truque 16 e ¾ 6 de tabelas de lotação de transportadoras (baixa autoridade); baús, picape e participações são premissas editáveis.'
+        : 'Sem tipos cadastrados: todos os caminhões são iguais (paletes por caminhão e manobra gerais). Restaure o catálogo ou adicione tipos para diferenciar o baú, a capacidade e o tempo de docagem.'),
       ...sc.vehicleTypes.map((v) => vehicleCard(ctx, v)),
       h('div', { class: 'row' },
-        h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('carreta')); ch(); ctx.rerender(); } }, '+ Carreta'),
-        h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('truck')); ch(); ctx.rerender(); } }, '+ Truck'),
-        h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle('vuc')); ch(); ctx.rerender(); } }, '+ VUC')),
+        ...(['carreta', 'truque', 'toco', 'vuc', 'picape'] as const).map((k) => h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle(k)); ch(); ctx.rerender(); } }, `+ ${({ carreta: 'Carreta', truque: 'Truque', toco: 'Toco', vuc: 'VUC', picape: 'Picape' })[k]}`)),
+        h('button', { class: 'b sm pri', title: 'Cadastra um tipo novo com o nome, o tamanho do baú e a capacidade que você definir', onclick: () => { sc.vehicleTypes.push(presetVehicle('novo')); ch(); ctx.rerender(); } }, '+ Novo veículo'),
+        h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes = defaultVehicleTypes(); ch(); ctx.rerender(); } }, 'Restaurar catálogo padrão')),
     ], false),
     section('Armazenagem', [
       selField('Modo de armazenagem (vale para toda a operação)', () => sc.storage.mode, (v) => ((sc.storage.mode = v), ch(), ctx.rerender()), [
@@ -455,7 +462,11 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
         ['basic', 'Básico (como antes: carga direta, sem conferência)'], ['standard', 'Padrão: bloco pronto (conferir, batimento, customizar, embarcar, registrar, lacrar)'], ['steps', 'Etapas configuráveis: monte o seu modelo'],
       ]),
       ...(sc.expedition.mode === 'basic' ? [h('p', { class: 'note' }, 'No formato básico o caminhão carrega e sai. Escolha "Padrão" ou "Etapas configuráveis" para a carga passar por conferência, customização, embarque, registro e lacre; nesses formatos a carga sai do stage de expedição (é preciso ter separação por palete ou palete full).')] : [
-        numField('Paletes por carga expedida', () => sc.expedition.palletsPerLoad, (v) => { sc.expedition.palletsPerLoad = Math.max(1, Math.round(v)); ch(); ctx.rerender(); }, { step: 1, min: 1, title: 'Cada caminhão de saída expede sempre essa quantidade de paletes' }),
+        ...(sc.vehicleTypes.length ? [
+          numField('Ocupação da carga (do baú)', () => sc.expedition.loadOccupancy * 100, (v) => { sc.expedition.loadOccupancy = Math.min(1, Math.max(0.01, v / 100)); ch(); ctx.rerender(); }, { step: 5, min: 1, max: 100, unit: '%', title: 'Cada caminhão expede capacidade do baú × esta ocupação (100% = baú cheio)' }),
+          h('p', { class: 'note' }, `Com tipos de veículo, a carga é a capacidade do baú × ocupação: ${sc.vehicleTypes.map((t) => `${t.name} ${Math.max(1, Math.round(t.capacityPallets * sc.expedition.loadOccupancy))}`).join(', ')} paletes. A quantidade fixa abaixo só vale sem tipos cadastrados.`),
+        ] : []),
+        numField('Paletes por carga expedida (sem tipos de veículo)', () => sc.expedition.palletsPerLoad, (v) => { sc.expedition.palletsPerLoad = Math.max(1, Math.round(v)); ch(); ctx.rerender(); }, { step: 1, min: 1, title: 'Cada caminhão de saída expede sempre essa quantidade de paletes' }),
         h('p', { class: 'note' }, sc.expedition.mode === 'standard'
           ? 'No formato padrão a sequência é fixa; você edita os parâmetros de cada etapa. A conferência pode ser simultânea à separação ou posterior; o embarque só começa depois do batimento e da customização; depois do embarque o conferente registra e lacra o baú, e só então o veículo é liberado (o motorista pode ou não acompanhar: não muda o tempo).'
           : 'Etapas configuráveis: ative, desative, reordene, acrescente ou remova etapas. O app avisa se a ordem foge da regra (conferir e customizar antes de embarcar; registrar e lacrar depois).'),

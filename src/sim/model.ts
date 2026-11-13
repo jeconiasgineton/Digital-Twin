@@ -5,7 +5,7 @@ import { effectiveSteps, type BoardStep, type ConferenceStep, type CustomizeStep
 import { planRoute, routeTravelSec, splitAmongPickers, type AisleInfo, type PickPos, type Stop } from '../model/picking';
 import { toLocal, toWorld } from '../math/spatial';
 import { amrChargeHours } from '../model/equipment';
-import { PEOPLE_ROLES, breakMinutesPerDay, effectiveVehicles, offsetInShift, waveOf } from '../model/traffic';
+import { PEOPLE_ROLES, breakMinutesPerDay, effectiveVehicles, loadPallets, offsetInShift, shareFor, waveOf } from '../model/traffic';
 import { Rng, distMean as distMeanOf, sampleDist } from '../math/rng';
 import { mean, percentile } from '../math/stats';
 import type { Pt } from '../math/spatial';
@@ -107,6 +107,7 @@ export class SimModel {
   skuCartons: number[] = [];
   /** estatísticas por tipo de veículo (índice = posição em effectiveVehicles) */
   private vStats: { name: string; n: number; dockSec: number; waitSec: number }[] = [];
+  private vStatsOut: { name: string; n: number; dockSec: number; waitSec: number }[] = [];
   readonly dockWaitIn: number[] = [];
   readonly dockWaitOut: number[] = [];
   readonly turnIn: number[] = [];
@@ -179,6 +180,7 @@ export class SimModel {
     this.vehIn = effectiveVehicles(sc, 'in');
     this.vehOut = effectiveVehicles(sc, 'out');
     this.vStats = this.vehIn.map((v) => ({ name: v.name, n: 0, dockSec: 0, waitSec: 0 }));
+    this.vStatsOut = this.vehOut.map((v) => ({ name: v.name, n: 0, dockSec: 0, waitSec: 0 }));
     this.world = world ?? buildWorld(layout, sc);
     this.horizon = sc.days * sc.shiftHours * 3600;
     this.warm = Math.min(sc.warmupHours * 3600, this.horizon * 0.5);
@@ -469,9 +471,9 @@ export class SimModel {
     };
   }
 
-  private pickVehicle(list: VehicleType[]): { idx: number; v: VehicleType } {
+  private pickVehicle(list: VehicleType[], dir: 'in' | 'out'): { idx: number; v: VehicleType } {
     if (list.length === 1) return { idx: 0, v: list[0] };
-    const idx = this.rngVeh.pick(list.map((v) => Math.max(0, v.share)));
+    const idx = this.rngVeh.pick(list.map((v) => shareFor(v, dir)));
     return { idx, v: list[idx] };
   }
 
@@ -503,14 +505,15 @@ export class SimModel {
     }
   }
 
-  private palletsPerTruck(spec: Scenario['palletsPerTruckIn']): number {
+  /** paletes de um veículo: normal(média, desvio) limitada pela capacidade do baú */
+  private palletsPerTruck(spec: Scenario['palletsPerTruckIn'], capacity: number): number {
     const n = Math.round(this.rngSvc.normal(spec.mean, spec.sd));
-    return Math.min(Math.max(1, n), Math.max(1, spec.max));
+    return Math.min(Math.max(1, n), Math.max(1, Math.min(spec.max, capacity)));
   }
 
   private *inboundTruck(): Process {
     const id = ++this.truckSeq;
-    const { idx: vi, v } = this.pickVehicle(this.vehIn);
+    const { idx: vi, v } = this.pickVehicle(this.vehIn, 'in');
     const tArr = this.sim.now;
     this.tracer?.truckQueued(id, 'in', tArr);
     const dock: DockItem = yield this.dockIn.request();
@@ -526,7 +529,7 @@ export class SimModel {
       st.waitSec += tDock - tArr;
     }
     yield turn;
-    const n = this.palletsPerTruck(v.pallets);
+    const n = this.palletsPerTruck(v.pallets, v.capacityPallets);
     const unloaded = new Countdown(this.sim, n);
     const custom = this.sc.useCustomProcesses ? this.sc.processes.find((p) => p.trigger === 'unloadPallet') : undefined;
     const gate = this.sc.vehicleExclusive ? new VehicleGate(this.sim, n) : undefined;
@@ -888,7 +891,7 @@ export class SimModel {
 
   private *outboundTruck(): Process {
     const id = ++this.truckSeq;
-    const { v } = this.pickVehicle(this.vehOut);
+    const { idx: vo, v } = this.pickVehicle(this.vehOut, 'out');
     const tArr = this.sim.now;
     this.tracer?.truckQueued(id, 'out', tArr);
     const dock: DockItem = yield this.dockOut.request();
@@ -898,11 +901,18 @@ export class SimModel {
       this.dockWaitOut.push((tDock - tArr) / 60);
       if ((tDock - tArr) / 60 > this.sc.dockWaitThresholdMin) this.c.waitOverOut++;
     }
-    yield sampleDist(this.rngSvc, v.dockTurnover);
+    const turnOut = sampleDist(this.rngSvc, v.dockTurnover);
+    if (tArr >= this.warm) {
+      const so = this.vStatsOut[vo];
+      so.n++;
+      so.dockSec += turnOut;
+      so.waitSec += tDock - tArr;
+    }
+    yield turnOut;
     if (this.sc.expedition.mode !== 'basic') {
-      yield* this.runExpedition(dock, tDock, v.trailerLengthM);
+      yield* this.runExpedition(dock, tDock, v.trailerLengthM, loadPallets(this.sc, v));
     } else {
-      const n = this.palletsPerTruck(v.pallets);
+      const n = this.palletsPerTruck(v.pallets, v.capacityPallets);
       const loaded = new Countdown(this.sim, n);
       const gate = this.sc.vehicleExclusive ? new VehicleGate(this.sim, n) : undefined;
       for (let i = 0; i < n; i++) this.sim.spawn(this.outboundPallet(dock, loaded, tDock, i, n, v.trailerLengthM, gate));
@@ -1174,10 +1184,9 @@ export class SimModel {
   }
 
   /** expedição por etapas: forma a carga (N paletes) e percorre conferir, batimento, customizar, embarcar, registrar e lacrar */
-  private *runExpedition(dock: DockItem, tDock: number, trailerM: number): Process {
-    const ex = this.sc.expedition;
+  private *runExpedition(dock: DockItem, tDock: number, trailerM: number, loadSize: number): Process {
     const c = this.c;
-    const n = Math.max(1, Math.round(ex.palletsPerLoad));
+    const n = Math.max(1, Math.round(loadSize));
     const measured = tDock >= this.warm;
     const stage = this.stageOutPt;
     // 1) forma a carga: um caminhão por vez recolhe seus N paletes do stage (esperando a separação)
@@ -1677,7 +1686,13 @@ export class SimModel {
       hourly: this.hourly,
       samples: { orderCycle: this.orderCycle, forkliftWait: this.forklifts.waits.map((w) => w / 60), putawayLead: this.putawayLead, truckTurn: [...this.turnIn, ...this.turnOut] },
       occupancySeries: this.occSeries,
-      vehicleStats: this.vStats.map((s) => ({ name: s.name, trucks: s.n / days, dockTurnMean: s.n ? s.dockSec / s.n / 60 : 0, dockWaitMean: s.n ? s.waitSec / s.n / 60 : 0 })),
+      vehicleStats: this.vStats.map((s, i) => {
+        const o = this.vStatsOut[i] ?? { n: 0, dockSec: 0, waitSec: 0 };
+        return {
+          name: s.name, trucks: s.n / days, dockTurnMean: s.n ? s.dockSec / s.n / 60 : 0, dockWaitMean: s.n ? s.waitSec / s.n / 60 : 0,
+          trucksOut: o.n / days, dockTurnOutMean: o.n ? o.dockSec / o.n / 60 : 0, dockWaitOutMean: o.n ? o.waitSec / o.n / 60 : 0,
+        };
+      }),
     };
   }
 }

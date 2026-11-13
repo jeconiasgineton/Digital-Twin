@@ -453,17 +453,19 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
       const name = String(pick(r, 'nome', 'tipo') ?? '').trim();
       if (!name) continue;
       const pm = num(pick(r, 'paletes_media'), 12)!;
+      const cap = Math.max(1, Math.round(num(pick(r, 'capacidade_paletes', 'paletes_max'), Math.max(pm, 1))!));
+      const sIn = frac(pick(r, 'participacao_entrada'));
+      const sOut = frac(pick(r, 'participacao_saida'));
       vs.push({
         id: `v${vs.length + 1}`, name, share: Math.max(0, frac(pick(r, 'participacao', 'percentual'), 1)!),
+        ...(sIn !== undefined ? { shareIn: Math.max(0, sIn) } : {}), ...(sOut !== undefined ? { shareOut: Math.max(0, sOut) } : {}), capacityPallets: cap,
         dockTurnover: parseDist(pick(r, 'distribuicao') ?? 'constante', pick(r, 'p1', 'param1') ?? 180, pick(r, 'p2', 'param2'), pick(r, 'p3', 'param3'), sc.ops.dockTurnover, warn, `manobra de ${name}`),
-        pallets: { mean: pm, sd: num(pick(r, 'paletes_desvio'), 0)!, max: num(pick(r, 'paletes_max'), Math.max(pm, 1))! },
+        pallets: { mean: Math.min(pm, cap), sd: num(pick(r, 'paletes_desvio'), 0)!, max: cap },
         trailerLengthM: num(pick(r, 'comprimento_bau_m', 'bau_m'), 14)!,
       });
     }
-    if (vs.length) {
-      sc.vehicleTypes = vs;
-      found.push('Veículos');
-    }
+    sc.vehicleTypes = vs; // aba presente e vazia = sem tipos (um caminhão genérico)
+    if (vs.length) found.push('Veículos');
   }
 
   // ---- Intervalos ----
@@ -763,10 +765,10 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   styleHeader(pr);
 
   const v = wb.addWorksheet('Veiculos');
-  v.columns = ['Nome', 'Participacao', 'Distribuicao', 'P1', 'P2', 'P3', 'Paletes_media', 'Paletes_desvio', 'Paletes_max', 'Comprimento_bau_m'].map((h) => ({ header: h, width: 16 }));
+  v.columns = ['Nome', 'Participacao', 'Participacao_entrada', 'Participacao_saida', 'Distribuicao', 'P1', 'P2', 'P3', 'Capacidade_paletes', 'Paletes_media', 'Paletes_desvio', 'Comprimento_bau_m'].map((h) => ({ header: h, width: 16 }));
   for (const t of sc.vehicleTypes) {
     const d = distRow(t.name, t.dockTurnover, '');
-    v.addRow([t.name, t.share, d[1], d[2], d[3], d[4], t.pallets.mean, t.pallets.sd, t.pallets.max, t.trailerLengthM]);
+    v.addRow([t.name, t.share, t.shareIn ?? null, t.shareOut ?? null, d[1], d[2], d[3], d[4], t.capacityPallets, t.pallets.mean, t.pallets.sd, t.trailerLengthM]);
   }
   styleHeader(v);
 
@@ -840,8 +842,8 @@ export async function exportResults(
   res.hourly.forEach((x) => h.addRow([x.hour, x.palletsIn, x.palletsOut, x.orders, x.utilForklift, x.utilWorker, x.queueForklift]));
   styleHeader(h);
   const vs = wb.addWorksheet('Veiculos');
-  vs.columns = ['Tipo', 'Veiculos_por_dia', 'Manobra_media_min', 'Espera_doca_media_min'].map((x) => ({ header: x, width: 24 }));
-  res.vehicleStats.forEach((v) => vs.addRow([v.name, v.trucks, v.dockTurnMean, v.dockWaitMean]));
+  vs.columns = ['Tipo', 'Recebimento_veiculos_dia', 'Recebimento_manobra_min', 'Recebimento_espera_doca_min', 'Expedicao_veiculos_dia', 'Expedicao_manobra_min', 'Expedicao_espera_doca_min'].map((x) => ({ header: x, width: 26 }));
+  res.vehicleStats.forEach((v) => vs.addRow([v.name, v.trucks, v.dockTurnMean, v.dockWaitMean, v.trucksOut, v.dockTurnOutMean, v.dockWaitOutMean]));
   styleHeader(vs);
   if (cap) {
     const c = wb.addWorksheet('Dimensionamento');

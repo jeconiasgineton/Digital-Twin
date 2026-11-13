@@ -70,11 +70,12 @@ describe('tipos de veículo', () => {
   });
   it('sem tipos cadastrados usa um tipo único com os parâmetros gerais; médias ponderadas por participação', () => {
     const sc = base();
+    sc.vehicleTypes = [];
     expect(effectiveVehicles(sc, 'in')).toHaveLength(1);
     expect(vehicleMeans(sc, 'in').pallets).toBe(sc.palletsPerTruckIn.mean);
     sc.vehicleTypes = [
-      { ...presetVehicle('carreta'), share: 3, pallets: { mean: 30, sd: 0, max: 33 }, dockTurnover: { kind: 'constant', a: 180 } },
-      { ...presetVehicle('truck'), share: 1, pallets: { mean: 10, sd: 0, max: 14 }, dockTurnover: { kind: 'constant', a: 60 } },
+      { ...presetVehicle('carreta'), share: 3, shareIn: undefined, shareOut: undefined, capacityPallets: 33, pallets: { mean: 30, sd: 0, max: 33 }, dockTurnover: { kind: 'constant', a: 180 } },
+      { ...presetVehicle('truck'), share: 1, shareIn: undefined, shareOut: undefined, capacityPallets: 14, pallets: { mean: 10, sd: 0, max: 14 }, dockTurnover: { kind: 'constant', a: 60 } },
     ];
     const m = vehicleMeans(sc, 'in');
     expect(m.pallets).toBeCloseTo(25, 9);

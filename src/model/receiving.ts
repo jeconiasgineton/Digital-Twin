@@ -1,8 +1,11 @@
 import type { ReceivingSpec, Scenario } from './types';
 import { Rng, distMean, sampleDist } from '../math/rng';
 
-/** palete padrão 1,2 m de comprimento: cada fileira de 2 paletes ocupa 1,2 m de profundidade do baú */
-export const PALLET_ROW_M = 1.2;
+/** palete padrão brasileiro (PBR 1,0 × 1,2 m): duas paletes lado a lado (2,4 m de largura) ocupam 1,0 m de profundidade do baú */
+export const PALLET_ROW_M = 1.0;
+
+/** quantos paletes PBR cabem num baú desse comprimento (2 por fileira) */
+export const capacityByLength = (lengthM: number): number => 2 * Math.floor(Math.max(0, lengthM) / PALLET_ROW_M);
 
 /**
  * Padrões do recebimento. Avaria de 3% dos paletes, fração de caixas 5% / 20% / 100% (mín/moda/máx) e

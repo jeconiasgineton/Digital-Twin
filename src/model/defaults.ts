@@ -1,6 +1,6 @@
 import type { Dist, Scenario } from './types';
 import { NIOSH_LOAD_KG, defaultEquipment } from './equipment';
-import { defaultArrival, defaultCalendar } from './traffic';
+import { defaultArrival, defaultCalendar, defaultVehicleTypes } from './traffic';
 import { defaultReceiving } from './receiving';
 import { defaultPicking } from './picking';
 import { defaultExpedition } from './expedition';
@@ -69,7 +69,7 @@ export function defaultScenario(): Scenario {
       { sku: 'SKU-C2', description: 'Baixíssimo giro', cls: 'C', share: 0.05, cartonsPerPallet: 40 },
     ],
     demandFactor: 1,
-    vehicleTypes: [],
+    vehicleTypes: defaultVehicleTypes(),
     arrivalsIn: defaultArrival(),
     arrivalsOut: defaultArrival(),
     dockWaitThresholdMin: 10,

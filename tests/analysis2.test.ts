@@ -194,7 +194,7 @@ describe('cenário de demonstração completo', () => {
     expect(k.damagedPalletPct.mean).toBeGreaterThan(0);
     expect(k.amrChargesPerDay.mean).toBeGreaterThan(0);
     expect(k.trucksDelayedPct.mean).toBeGreaterThan(0);
-    expect(res.vehicleStats.map((v) => v.name)).toEqual(['Carreta', 'Truck']);
+    expect(res.vehicleStats.map((v) => v.name)).toEqual(['Carreta', 'Truque']);
     const cap = analyzeCapacity(s, r.layout!);
     expect(cap.rows.map((x) => x.key)).toEqual(expect.arrayContaining(['forklift', 'checker', 'mover', 'stage', 'transit', 'triage', 'charger']));
   });

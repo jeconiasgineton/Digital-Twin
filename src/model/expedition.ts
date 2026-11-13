@@ -79,8 +79,10 @@ export type ExpStep = ConferenceStep | ReconcileStep | CustomizeStep | BoardStep
 export interface ExpeditionSpec {
   /** básico: como era (carga do rack ou do stage conforme a separação) · padrão: bloco pronto · etapas: modelo do usuário */
   mode: 'basic' | 'standard' | 'steps';
-  /** paletes por carga expedida (um caminhão de saída leva sempre essa quantidade) */
+  /** paletes por carga expedida quando não há tipos de veículo cadastrados (um caminhão de saída leva sempre essa quantidade) */
   palletsPerLoad: number;
+  /** com tipos de veículo: a carga é a capacidade do baú × esta ocupação (1 = baú cheio) */
+  loadOccupancy: number;
   steps: ExpStep[];
 }
 
@@ -115,7 +117,7 @@ export const STANDARD_ORDER: ExpStepType[] = ['conference', 'reconcile', 'custom
 
 export const defaultExpeditionSteps = (): ExpStep[] => STANDARD_ORDER.map(makeExpStep);
 
-export const defaultExpedition = (): ExpeditionSpec => ({ mode: 'basic', palletsPerLoad: 28, steps: defaultExpeditionSteps() });
+export const defaultExpedition = (): ExpeditionSpec => ({ mode: 'basic', palletsPerLoad: 28, loadOccupancy: 1, steps: defaultExpeditionSteps() });
 
 /**
  * Etapas efetivas: no formato "padrão" a estrutura e a ordem são as do bloco pronto (com os parâmetros que o usuário
@@ -136,6 +138,7 @@ export function validateExpedition(e: ExpeditionSpec): ExpIssue[] {
   if (e.mode === 'basic') return out;
   const steps = effectiveSteps(e);
   const idx = (t: ExpStepType) => steps.findIndex((s) => s.type === t);
+  if (e.loadOccupancy <= 0 || e.loadOccupancy > 1) out.push({ level: 'erro', msg: 'Expedição: a ocupação da carga deve estar entre 0 e 100%.' });
   if (e.palletsPerLoad < 1) out.push({ level: 'erro', msg: 'Expedição: a carga precisa ter ao menos 1 palete.' });
   const board = steps.find((s) => s.type === 'board');
   if (!board) out.push({ level: 'erro', msg: 'Expedição sem etapa "Embarcar": nenhuma carga seria embarcada.' });
