@@ -24,6 +24,7 @@ Fluxo típico:
 
 1. **Importar Excel** (botão no topo ou arraste o `.xlsx`), **importar uma planta** (Layout → *Planta / desenho existente*) ou usar **Exemplo**. *Modelo .xlsx* baixa uma planilha preenchida com o cenário atual; há também `examples/exemplo-completo.xlsx`.
 2. A simulação roda **ao vivo** em 3D (1× a 4000×, mapa de calor, vista 2D).
+   No 3D cada equipamento e veículo tem o seu desenho: empilhadeira, **paleteira manual** (com o operário caminhando atrás), **transpaleteira elétrica** (bateria e timão de comando), **AMR** (plataforma baixa com LED e sensor, que ergue o palete) e, pelo comprimento do baú, **carreta** (cavalo + semirreboque), **truque**, **toco**, **VUC** e **picape**, com o nome do tipo sobre o veículo.
 3. Edite **Layout** (ferramentas à esquerda) e **Dados** (equipamentos, veículos e chegadas, recebimento, armazenagem, intervalos, tempos) – tudo é recalculado.
 4. **Resultados** → *Executar Monte Carlo*: KPIs com IC 95%, resultados por tipo de veículo, gráficos e diagnóstico. Exporta `.xlsx`.
 5. **Dimensionar**: análise analítica instantânea (filas e espaços) e varreduras por simulação.
@@ -143,7 +144,7 @@ scripts/    modelos de planilha, benchmarks
 - Colisões/bloqueio entre veículos em corredores estreitos não são modelados (apenas distância e velocidade); a largura da rua não limita o tráfego. Use o mapa de calor.
 - Processos personalizados: só o gatilho "palete que sai do veículo de recebimento" (recebimento e armazenagem); o editor não tem desfazer; os tipos de veículo e os locais são os do layout.
 - A conferência (e, portanto, a detecção e a triagem de avarias) só ocorre com conferentes (quantidade > 0).
-- AMR: a bateria desgasta com o tempo de trabalho (não distingue vazio/carregado); no 3D, AMR, paleteiras e transpaleteiras aparecem com o desenho de operário, e os tipos de veículo com o mesmo desenho de caminhão.
+- AMR: a bateria desgasta com o tempo de trabalho (não distingue vazio/carregado).
 - Armazenagem faseada: a análise analítica trata os transitórios em conjunto (sem desequilíbrio entre ruas); a regra ABC escolhe o rack e sorteia a posição dentro dele.
 - Separação por palete: o furo de estoque é um tempo de espera (a reposição em si não é simulada por empilhadeira); as caixas do pedido não são ligadas a SKUs reais (só à curva A/B/C); com a carga a partir do rack (padrão) os paletes separados só se acumulam no stage de expedição. No modo antigo a face é considerada sempre abastecida.
 - Tempo de simulação é “operacional” (horas fora do turno são comprimidas); backlog atravessa os dias.

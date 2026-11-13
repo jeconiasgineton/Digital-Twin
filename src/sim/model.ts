@@ -18,7 +18,7 @@ export type { World };
 /** Interface opcional para animação 3D. */
 export interface Tracer {
   move(a: Agent, t0: number, t1: number, pts: Pt[], carrying: boolean): void;
-  truckQueued(id: number, kind: 'in' | 'out', t: number): void;
+  truckQueued(id: number, kind: 'in' | 'out', t: number, veh?: { name?: string; lengthM: number }): void;
   truckDocked(id: number, kind: 'in' | 'out', dockIdx: number, t: number): void;
   truckLeft(id: number, kind: 'in' | 'out', t: number): void;
 }
@@ -526,7 +526,7 @@ export class SimModel {
     const id = ++this.truckSeq;
     const { idx: vi, v } = this.pickVehicle(this.vehIn, 'in');
     const tArr = this.sim.now;
-    this.tracer?.truckQueued(id, 'in', tArr);
+    this.tracer?.truckQueued(id, 'in', tArr, { name: v.name, lengthM: v.trailerLengthM });
     const dock: DockItem = yield this.dockIn.request();
     const tDock = this.sim.now;
     this.tracer?.truckDocked(id, 'in', dock.idx, tDock);
@@ -904,7 +904,7 @@ export class SimModel {
     const id = ++this.truckSeq;
     const { idx: vo, v } = this.pickVehicle(this.vehOut, 'out');
     const tArr = this.sim.now;
-    this.tracer?.truckQueued(id, 'out', tArr);
+    this.tracer?.truckQueued(id, 'out', tArr, { name: v.name, lengthM: v.trailerLengthM });
     const dock: DockItem = yield this.dockOut.request();
     const tDock = this.sim.now;
     this.tracer?.truckDocked(id, 'out', dock.idx, tDock);

@@ -386,20 +386,179 @@ export function buildWorker(kind: 'worker' | 'checker' = 'worker'): WorkerVis {
   return { group: g, legL, legR, armL, armR, carry };
 }
 
-export function buildTruck(kind: 'in' | 'out'): THREE.Group {
+/** classe visual do veículo, pelo comprimento do baú (o nome é livre; o tamanho é o que importa) */
+export type VehicleClass = 'carreta' | 'truque' | 'toco' | 'vuc' | 'picape';
+export const vehicleClass = (lengthM: number): VehicleClass => (lengthM >= 11 ? 'carreta' : lengthM >= 7.5 ? 'truque' : lengthM >= 5.5 ? 'toco' : lengthM >= 3.5 ? 'vuc' : 'picape');
+
+export interface VehicleStyle {
+  name?: string;
+  lengthM: number;
+}
+
+const REAR = -6.7; // a traseira fica sempre no mesmo ponto: é ela que encosta na doca
+
+/**
+ * Veículo conforme o tamanho: carreta (cavalo + semirreboque, 3 eixos), truque (baú rígido, eixo traseiro duplo),
+ * toco (baú rígido, 2 eixos), VUC (baú baixo, cabine curta) e picape (carroceria aberta com 1 palete).
+ * Comprimento ao longo de Z local; traseira em -Z (voltada para a doca).
+ */
+export function buildTruck(kind: 'in' | 'out', style: VehicleStyle = { lengthM: 13.6 }): THREE.Group {
   const g = new THREE.Group();
-  // comprimento ao longo de Z local; traseira em -Z (voltada para a doca)
-  const trailer = box(2.55, 2.9, 13.4, kind === 'in' ? M.truckIn : M.truckOut, 0, 0.9, 0);
-  g.add(trailer);
-  g.add(box(2.4, 0.3, 13.0, M.steel, 0, 0.6, 0));
-  g.add(box(2.2, 2.4, 2.3, kind === 'in' ? M.cabIn : M.cabOut, 0, 0.9, 7.9));
-  g.add(box(2.0, 0.9, 0.06, M.glass, 0, 2.15, 9.07));
-  const stripe = box(2.57, 0.35, 13.42, kind === 'in' ? M.cabIn : M.cabOut, 0, 1.6, 0);
-  g.add(stripe);
-  for (const z of [-5.5, -4.3, 4.6, 7.8]) {
-    for (const x of [-1.1, 1.1]) g.add(cyl(0.5, 0.3, M.tire, x, 0.5, z, false)).children.at(-1)!.rotation.z = Math.PI / 2;
+  const cls = vehicleClass(style.lengthM);
+  const box_ = kind === 'in' ? M.truckIn : M.truckOut;
+  const cab = kind === 'in' ? M.cabIn : M.cabOut;
+  const L = Math.max(1.6, style.lengthM);
+  const wheel = (x: number, z: number, r = 0.5) => {
+    const w = cyl(r, 0.3, M.tire, x, r, z, false);
+    w.rotation.z = Math.PI / 2;
+    g.add(w);
+  };
+  if (cls === 'picape') {
+    // cabine + caçamba aberta com um palete
+    g.add(box(1.9, 0.7, L + 2.0, cab, 0, 0.75, REAR + (L + 2.0) / 2));
+    g.add(box(1.8, 0.85, 1.7, cab, 0, 1.45, REAR + L + 0.55));
+    g.add(box(1.6, 0.5, 0.06, M.glass, 0, 1.55, REAR + L + 1.42));
+    g.add(box(1.0, 0.14, 1.2, M.pallet, 0, 1.18, REAR + L / 2));
+    g.add(box(0.95, 0.7, 1.1, M.carton[0], 0, 1.6, REAR + L / 2));
+    for (const z of [REAR + 0.7, REAR + L + 1.0]) for (const x of [-0.85, 0.85]) wheel(x, z, 0.38);
+    return g;
   }
+  if (cls === 'carreta') {
+    const bodyH = 2.9;
+    g.add(box(2.55, bodyH, L, box_, 0, 0.9, REAR + L / 2));
+    g.add(box(2.4, 0.3, L - 0.4, M.steel, 0, 0.6, REAR + L / 2));
+    g.add(box(2.57, 0.35, L + 0.02, cab, 0, 1.6, REAR + L / 2));
+    // cavalo mecânico à frente, com a quinta roda sob o semirreboque
+    const cz = REAR + L + 1.3;
+    g.add(box(2.2, 2.4, 2.3, cab, 0, 0.9, cz));
+    g.add(box(2.0, 0.9, 0.06, M.glass, 0, 2.15, cz + 1.17));
+    g.add(box(2.1, 0.5, 3.2, M.dark, 0, 0.55, cz - 0.6));
+    for (const z of [REAR + 1.2, REAR + 2.4, REAR + 3.6]) for (const x of [-1.1, 1.1]) wheel(x, z);
+    for (const z of [cz - 0.9, cz + 0.6]) for (const x of [-1.1, 1.1]) wheel(x, z);
+    return g;
+  }
+  // rígidos: o baú e a cabine fazem parte do mesmo chassi
+  const small = cls === 'vuc';
+  const bodyH = small ? 2.3 : cls === 'toco' ? 2.6 : 2.8;
+  const bodyW = small ? 2.15 : 2.45;
+  g.add(box(bodyW, bodyH, L, box_, 0, 0.95, REAR + L / 2));
+  g.add(box(bodyW - 0.2, 0.3, L, M.steel, 0, 0.62, REAR + L / 2));
+  g.add(box(bodyW + 0.02, 0.3, L + 0.02, cab, 0, 1.5, REAR + L / 2));
+  const cabLen = small ? 1.7 : 2.1;
+  const cabH = small ? 1.9 : 2.2;
+  const cz = REAR + L + cabLen / 2 + 0.1;
+  g.add(box(bodyW - 0.15, cabH, cabLen, cab, 0, 0.95, cz));
+  g.add(box(bodyW - 0.4, 0.8, 0.06, M.glass, 0, 1.85, cz + cabLen / 2 + 0.01));
+  const r = small ? 0.42 : 0.5;
+  const front = cz + cabLen / 2 - 0.5;
+  for (const x of [-bodyW / 2 + 0.15, bodyW / 2 - 0.15]) wheel(x, front, r);
+  if (cls === 'truque') for (const z of [REAR + 1.2, REAR + 2.4]) for (const x of [-1.1, 1.1]) wheel(x, z, r); // eixo traseiro duplo
+  else for (const x of [-bodyW / 2 + 0.15, bodyW / 2 - 0.15]) wheel(x, REAR + 1.2, r);
   return g;
+}
+
+/* ---- equipamentos sem elevação ---- */
+
+export interface MoverVis extends ForkliftVis {
+  /** operário que acompanha a paleteira manual */
+  operator?: WorkerVis;
+  /** plataforma que sobe (AMR) */
+  lift?: THREE.Object3D;
+}
+
+const M2 = {
+  jack: mat(0xd1342f),
+  truckBlue: mat(0x1d6fd1),
+  battery: mat(0x2b3138),
+  amr: mat(0x14b8a6),
+  amrTop: mat(0x0f766e),
+  led: new THREE.MeshBasicMaterial({ color: 0x4ade80 }),
+  lidar: mat(0x111827),
+};
+
+/** paleteira manual: dois garfos baixos, bomba hidráulica, timão e o operário caminhando atrás */
+export function buildPalletJack(): MoverVis {
+  const g = new THREE.Group();
+  const forks = new THREE.Group();
+  forks.add(box(1.1, 0.06, 0.16, M.steel, 0.55, 0.08, 0.26));
+  forks.add(box(1.1, 0.06, 0.16, M.steel, 0.55, 0.08, -0.26));
+  forks.add(box(0.2, 0.16, 0.68, M2.jack, -0.05, 0.12, 0));
+  g.add(forks);
+  g.add(box(0.14, 0.9, 0.14, M2.jack, -0.12, 0.55, 0)); // coluna da bomba
+  const tiller = box(0.9, 0.05, 0.05, M.dark, -0.55, 1.05, 0);
+  tiller.rotation.z = -0.4;
+  g.add(tiller);
+  const wheels: THREE.Mesh[] = [];
+  for (const [x, z] of [[1.0, 0.26], [1.0, -0.26], [-0.05, 0.3], [-0.05, -0.3]]) {
+    const w = cyl(0.07, 0.1, M.tire, x, 0.07, z, true);
+    wheels.push(w);
+    g.add(w);
+  }
+  const carry = new THREE.Group();
+  carry.add(box(1.0, 0.14, 1.2, M.pallet, 0.55, 0.2, 0));
+  carry.add(box(0.95, 0.9, 1.1, M.carton[1], 0.55, 0.34, 0));
+  carry.visible = false;
+  g.add(carry);
+  const operator = buildWorker('worker');
+  operator.group.position.set(-1.15, 0, 0);
+  g.add(operator.group);
+  return { group: g, carry, forks, wheels, operator };
+}
+
+/** transpaleteira elétrica: corpo com bateria, plataforma/timão de comando e garfos longos */
+export function buildPalletTruck(): MoverVis {
+  const g = new THREE.Group();
+  g.add(box(0.7, 0.55, 0.7, M2.battery, -0.1, 0.4, 0));
+  g.add(box(0.72, 0.06, 0.72, M2.truckBlue, -0.1, 0.7, 0));
+  g.add(box(0.5, 0.05, 0.65, M.dark, -0.6, 0.1, 0)); // plataforma do operador
+  const tiller = box(0.1, 0.95, 0.1, M2.truckBlue, -0.45, 0.65, 0.2);
+  tiller.rotation.z = -0.25;
+  g.add(tiller);
+  g.add(box(0.3, 0.1, 0.5, M.dark, -0.6, 1.1, 0.2)); // cabeçote de comando
+  const light = box(0.1, 0.1, 0.1, M2.led, -0.1, 0.82, 0);
+  g.add(light);
+  const forks = new THREE.Group();
+  forks.add(box(1.5, 0.07, 0.17, M.steel, 0.85, 0.09, 0.28));
+  forks.add(box(1.5, 0.07, 0.17, M.steel, 0.85, 0.09, -0.28));
+  g.add(forks);
+  const wheels: THREE.Mesh[] = [];
+  for (const [x, z] of [[1.55, 0.28], [1.55, -0.28], [-0.1, 0.3], [-0.1, -0.3]]) {
+    const w = cyl(0.09, 0.12, M.tire, x, 0.09, z, true);
+    wheels.push(w);
+    g.add(w);
+  }
+  const carry = new THREE.Group();
+  carry.add(box(1.0, 0.14, 1.2, M.pallet, 0.9, 0.2, 0));
+  carry.add(box(0.95, 0.9, 1.1, M.carton[1], 0.9, 0.34, 0));
+  carry.visible = false;
+  g.add(carry);
+  return { group: g, carry, forks, wheels };
+}
+
+/** AMR: plataforma baixa que entra sob o palete e o ergue; sensor a laser na frente e faixa luminosa */
+export function buildAmr(): MoverVis {
+  const g = new THREE.Group();
+  g.add(box(1.5, 0.28, 0.95, M2.amr, 0, 0.2, 0));
+  g.add(box(1.52, 0.04, 0.97, M2.led, 0, 0.36, 0)); // faixa de LED
+  g.add(box(0.2, 0.18, 0.4, M2.lidar, 0.78, 0.3, 0)); // sensor frontal
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), M2.lidar);
+  dome.position.set(0.8, 0.46, 0);
+  g.add(dome);
+  const lift = new THREE.Group();
+  lift.add(box(1.3, 0.06, 0.85, M2.amrTop, 0, 0.37, 0));
+  g.add(lift);
+  const carry = new THREE.Group();
+  carry.add(box(1.0, 0.14, 1.2, M.pallet, 0, 0.5, 0));
+  carry.add(box(0.95, 0.9, 1.1, M.carton[1], 0, 0.64, 0));
+  carry.visible = false;
+  lift.add(carry);
+  const wheels: THREE.Mesh[] = [];
+  for (const [x, z] of [[0.5, 0.5], [0.5, -0.5], [-0.5, 0.5], [-0.5, -0.5]]) {
+    const w = cyl(0.12, 0.1, M.tire, x, 0.12, z, true);
+    wheels.push(w);
+    g.add(w);
+  }
+  return { group: g, carry, forks: lift as THREE.Group, wheels, lift };
 }
 
 export function makeLabel(text: string, scale = 1, color = '#e5e7eb', bg = 'rgba(15,23,42,0.75)'): THREE.Sprite {

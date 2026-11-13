@@ -3,7 +3,7 @@ import type { Layout, Scenario } from '../model/types';
 import type { Pt } from '../math/spatial';
 import { SimModel, type Tracer } from '../sim/model';
 import { type Agent, DOCK_DEPTH, TRUCK_SPOT, buildWorld } from '../sim/world';
-import { buildForklift, buildTruck, buildWorker, type ForkliftVis, type WorkerVis } from './entities';
+import { buildAmr, buildForklift, buildPalletJack, buildPalletTruck, buildTruck, buildWorker, makeLabel, type ForkliftVis, type VehicleStyle, type WorkerVis } from './entities';
 import type { SceneView } from './scene';
 
 const DEG = Math.PI / 180;
@@ -26,6 +26,10 @@ interface AgentVis {
   moving: boolean;
   fk?: ForkliftVis;
   wk?: WorkerVis;
+  /** operário que anda atrás da paleteira manual */
+  opr?: WorkerVis;
+  /** AMR: a plataforma sobe com o palete */
+  amr?: boolean;
   obj: THREE.Object3D;
   phase: number;
 }
@@ -91,14 +95,22 @@ export class Playback implements Tracer {
     let obj: THREE.Object3D;
     let fk: ForkliftVis | undefined;
     let wk: WorkerVis | undefined;
+    let opr: WorkerVis | undefined;
+    let amr = false;
     if (a.kind === 'forklift') {
       fk = buildForklift();
       obj = fk.group;
+    } else if (a.kind === 'mover') {
+      const m = a.eq === 'amr' ? buildAmr() : a.eq === 'palletTruck' ? buildPalletTruck() : buildPalletJack();
+      fk = m;
+      opr = m.operator;
+      amr = a.eq === 'amr';
+      obj = m.group;
     } else {
       wk = buildWorker(a.kind === 'checker' ? 'checker' : 'worker');
       obj = wk.group;
     }
-    const v: AgentVis = { agent: a, segs: [], heading: 0, pos: { x: a.x, z: a.z }, carrying: false, moving: false, fk, wk, obj, phase: Math.random() * 6 };
+    const v: AgentVis = { agent: a, segs: [], heading: 0, pos: { x: a.x, z: a.z }, carrying: false, moving: false, fk, wk, opr, amr, obj, phase: Math.random() * 6 };
     this.agents.set(a.id, v);
     obj.position.set(a.x, 0, a.z);
     this.group.add(obj);
@@ -113,8 +125,13 @@ export class Playback implements Tracer {
     v.segs.push({ t0, t1: Math.max(t1, t0 + 0.01), pts, cum, total: cum[cum.length - 1], carrying });
     if (this.heatOn && this.heat) this.stamp(pts);
   }
-  truckQueued(id: number, kind: 'in' | 'out', t: number) {
-    const mesh = buildTruck(kind);
+  truckQueued(id: number, kind: 'in' | 'out', t: number, veh?: VehicleStyle) {
+    const mesh = buildTruck(kind, veh);
+    if (veh?.name) {
+      const lab = makeLabel(veh.name, 1.6);
+      lab.position.set(0, 4.6, 0);
+      mesh.add(lab);
+    }
     mesh.visible = true;
     this.group.add(mesh);
     this.trucks.set(id, { id, kind, state: 'queued', dockIdx: -1, t, from: { x: 0, z: 0 }, mesh });
@@ -305,8 +322,15 @@ export class Playback implements Tracer {
       if (v.fk) {
         const carrying = v.carrying && moving;
         v.fk.carry.visible = carrying;
-        v.fk.forks.position.y = carrying ? 0.15 : 0;
+        v.fk.forks.position.y = carrying ? (v.amr ? 0.12 : 0.15) : 0;
         for (const w of v.fk.wheels) if (moving) w.rotation.z += dt * 6;
+        if (v.opr) {
+          const sw = moving ? Math.sin(t * 6 + v.phase) * 0.6 : 0;
+          v.opr.legL.rotation.z = sw;
+          v.opr.legR.rotation.z = -sw;
+          v.opr.armL.rotation.z = -1.0;
+          v.opr.armR.rotation.z = -1.0;
+        }
       } else if (v.wk) {
         const sw = moving ? Math.sin(t * 6 + v.phase) * 0.6 : 0;
         v.wk.legL.rotation.z = sw;
