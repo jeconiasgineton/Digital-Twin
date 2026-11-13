@@ -3,6 +3,7 @@ import { NIOSH_LOAD_KG, defaultEquipment } from './equipment';
 import { defaultArrival, defaultCalendar } from './traffic';
 import { defaultReceiving } from './receiving';
 import { defaultPicking } from './picking';
+import { defaultExpedition } from './expedition';
 
 const tri = (min: number, mode: number, max: number): Dist => ({ kind: 'triangular', a: min, b: mode, c: max });
 
@@ -77,6 +78,7 @@ export function defaultScenario(): Scenario {
     storage: { mode: 'direct', step1With: ['palletTruck', 'palletJack', 'amr'] },
     processes: [],
     picking: defaultPicking(),
+    expedition: defaultExpedition(),
     vehicleExclusive: true,
     useCustomProcesses: false,
   };

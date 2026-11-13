@@ -1,3 +1,4 @@
+import type { ExpeditionSpec } from './expedition';
 import type { PickingSpec } from './picking';
 import type { ProcessDef } from './process';
 
@@ -277,6 +278,8 @@ export interface Scenario {
   processes: ProcessDef[];
   /** separação picking por palete (rota, tempos, furos de estoque) */
   picking: PickingSpec;
+  /** expedição: carga (paletes por caminhão), conferência, customização, embarque, registro e lacre */
+  expedition: ExpeditionSpec;
   /** dentro de cada veículo só um equipamento (ou operário com paleteira) trabalha por vez; vale para recebimento e expedição */
   vehicleExclusive: boolean;
   /** true: o processo personalizado de recebimento conduz cada palete que sai do veículo, no lugar do fluxo padrão */
@@ -386,6 +389,15 @@ export interface RunKpis {
   stageOutMax: number; // paletes simultâneos no stage de expedição (carga a partir do stage)
   expeditionWaitMean: number; // espera do caminhão por palete separado (min)
   vehicleLockWaitMean: number; // espera para entrar no baú (um equipamento por vez) (min)
+  // expedição por etapas
+  loadReadyMean: number; // da doca até a carga completa no stage (min)
+  expConferMean: number; // conferência da carga quando posterior (min)
+  expReconcileMean: number; // batimento (min)
+  expCustomizeMean: number; // customização (min)
+  expBoardMean: number; // embarque (min)
+  expCloseMean: number; // registro + lacre + tarefas finais (min)
+  divergentLoadsPct: number; // cargas com divergência no batimento
+  customizedPalletsPerLoad: number;
 }
 
 export interface VehicleStat {

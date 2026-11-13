@@ -4,6 +4,7 @@ import { defaultScenario } from '../model/defaults';
 import { defaultEquipment, normalizeEquipment } from '../model/equipment';
 import { PEOPLE_ROLES } from '../model/traffic';
 import { parseAddresses } from '../model/picking';
+import { EXP_LABEL, type ExpStep, type ExpStepType } from '../model/expedition';
 import { STEP_LABEL, portsOf, type ProcessDef, type Step, type StepType } from '../model/process';
 import { defaultLayoutParams, generateLayout, newId, type LayoutParams } from '../model/layoutGen';
 import { linearEnds, toWorld } from '../math/spatial';
@@ -289,6 +290,9 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     if (lf) sc.picking.loadFrom = lf.startsWith('stage') ? 'stage' : 'rack';
     const lw = kindsOf(g('expedicao_equipamentos'));
     if (lw.length) sc.picking.loadWith = lw;
+    const em = norm(g('expedicao_modo'));
+    if (em) sc.expedition.mode = em.startsWith('etap') || em === 'steps' ? 'steps' : em.startsWith('pad') || em === 'standard' ? 'standard' : 'basic';
+    setN('expedicao_paletes_por_carga', (v) => (sc.expedition.palletsPerLoad = Math.max(1, Math.round(v))));
     const ve = norm(g('veiculo_exclusivo'));
     if (ve) sc.vehicleExclusive = ['s', 'sim', '1', 'true', 'x'].includes(ve);
     const am = norm(g('picking_area_modo'));
@@ -383,6 +387,32 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
     }
     normalizeEquipment(sc);
   } else warn('Aba "Recursos" não encontrada – usando padrão.');
+
+  // ---- Expedição (etapas) ----
+  const wsE = findSheet(wb, ['Expedicao', 'Expedição', 'Dispatch']);
+  if (wsE) {
+    const steps: ExpStep[] = [];
+    for (const r of table(wsE).rows) {
+      const type = norm(pick(r, 'tipo')) as ExpStepType;
+      if (!(type in EXP_LABEL)) {
+        if (pick(r, 'tipo')) warn(`Expedicao: tipo de etapa "${pick(r, 'tipo')}" desconhecido.`);
+        continue;
+      }
+      let extra: Record<string, unknown> = {};
+      try {
+        extra = JSON.parse(String(pick(r, 'parametros') ?? '{}'));
+      } catch {
+        warn(`Expedicao: parâmetros inválidos na etapa "${pick(r, 'tipo')}".`);
+      }
+      const ativo = norm(pick(r, 'ativo'));
+      const label = pick(r, 'rotulo');
+      steps.push({ ...extra, id: String(pick(r, 'etapa_id') ?? `e${steps.length}`), type, enabled: !ativo || ['s', 'sim', '1', 'true', 'x'].includes(ativo), ...(label ? { label: String(label) } : {}) } as unknown as ExpStep);
+    }
+    if (steps.length) {
+      sc.expedition.steps = steps;
+      found.push('Expedição');
+    }
+  }
 
   // ---- Processos personalizados ----
   const wsPr = findSheet(wb, ['Processos', 'Processes']);
@@ -602,7 +632,7 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   [
     'DIGITAL TWIN LOGÍSTICO – Planilha de dimensionamento',
     '',
-    'Processos (blocos de ações genéricas: uma linha por bloco; Saidas e Parametros em JSON, editados de preferência no editor visual). Abas: Parametros (chave/valor), Recursos (empilhadeira, paleteira_manual, transpaleteira, amr, operario, conferente; AMR: Autonomia_min, Gatilho_carga, Carga_min, Setup_min, Carga_inicio_turno/fim_turno, Carga_horarios no formato h;h), Veiculos (tipos de veículo), Intervalos (pausas), Demanda (24 linhas), Operacoes (distribuições de tempo em segundos), SKUs (curva ABC) e Layout (opcional).',
+    'Expedicao (etapas da expedição: conferência, batimento, customização, embarque, registro, lacre; Parametros em JSON, edite de preferência na tela), Processos (blocos de ações genéricas: uma linha por bloco; Saidas e Parametros em JSON, editados de preferência no editor visual). Abas: Parametros (chave/valor), Recursos (empilhadeira, paleteira_manual, transpaleteira, amr, operario, conferente; AMR: Autonomia_min, Gatilho_carga, Carga_min, Setup_min, Carga_inicio_turno/fim_turno, Carga_horarios no formato h;h), Veiculos (tipos de veículo), Intervalos (pausas), Demanda (24 linhas), Operacoes (distribuições de tempo em segundos), SKUs (curva ABC) e Layout (opcional).',
     'Veiculos: Manobra/docagem em segundos (Distribuicao + P1..P3, ex.: constante 180 = 3 min); Participacao em % da frota. Sem linhas = um tipo único com os parâmetros gerais. Intervalos: Inicio = hora do dia (12 ou 12:30); Grupos = todos ou empilhadeira;operario;conferente; Escalonamento = todos (juntos) | metade (metade por vez) | percentual (use a coluna Percentual).',
     'Chegadas (Parametros): chegada_entrada_modo / chegada_saida_modo = aleatorio | intervalo | agendado, com intervalo_min, horarios (h;h) e atraso_*_prob/media_min/desvio_min.',
     'Se a aba Layout estiver vazia/ausente, o galpão é gerado a partir dos parâmetros docas_entrada, docas_saida, fileiras_rack, vaos_por_fileira, niveis, esteiras e estacoes.',
@@ -656,6 +686,8 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['armazenagem_modo', sc.storage.mode === 'phased' ? 'faseada' : 'direta', 'direta (empilhadeira do stage ao endereço) | faseada (etapa 1 sem elevação até a rua; etapa 2 elevação)'],
     ['armazenagem_etapa1_equipamentos', sc.storage.step1With.map((k) => ({ forklift: 'empilhadeira', palletJack: 'paleteira_manual', palletTruck: 'transpaleteira', amr: 'amr' })[k]).join(';'), 'Faseada: equipamentos da etapa 1, separados por ; (o disponível é acionado)'],
     ['separacao_modo', sc.picking.mode === 'pallet' ? 'palete' : 'legado', 'legado (esteira e embalagem) | palete (rota, leitura de endereço, limite do palete, furos)'],
+    ['expedicao_modo', sc.expedition.mode === 'steps' ? 'etapas' : sc.expedition.mode === 'standard' ? 'padrao' : 'basico', 'basico (como antes) | padrao (bloco: conferir, batimento, customizar, embarcar, registrar, lacrar) | etapas (modelo do usuário na aba Expedicao)'],
+    ['expedicao_paletes_por_carga', sc.expedition.palletsPerLoad, 'Paletes por carga expedida (cada caminhão de saída expede sempre essa quantidade; formatos padrao e etapas)'],
     ['veiculo_exclusivo', sc.vehicleExclusive ? 'S' : 'N', 'S = um equipamento (ou operário com paleteira) por vez dentro de cada veículo, em recebimento e expedição'],
     ['palete_full_pedidos_hora', sc.picking.full.ordersPerHour, 'Palete full: pedidos por hora (0 = desligado)'],
     ['palete_full_paletes_media', sc.picking.full.palletsPerOrder.mean, 'Palete full: paletes por pedido – média'],
@@ -705,6 +737,15 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
   }
   rows.forEach((r) => p.addRow(r));
   styleHeader(p);
+
+  const ex = wb.addWorksheet('Expedicao');
+  ex.columns = ['Ordem', 'Etapa_Id', 'Tipo', 'Ativo', 'Rotulo', 'Parametros'].map((h) => ({ header: h, width: h === 'Parametros' ? 90 : 18 }));
+  (sc.expedition?.steps ?? []).forEach((s, i) => {
+    const { id: _i, type: _t, enabled: _e, label: _l, ...rest } = s as unknown as Record<string, unknown>;
+    void [_i, _t, _e, _l];
+    ex.addRow([i + 1, s.id, s.type, s.enabled ? 'S' : 'N', s.label ?? null, JSON.stringify(rest)]);
+  });
+  styleHeader(ex);
 
   const pr = wb.addWorksheet('Processos');
   pr.columns = ['Processo_Id', 'Nome_Processo', 'Bloco_Id', 'Tipo', 'X', 'Y', 'Rotulo', 'Saidas', 'Parametros'].map((h) => ({ header: h, width: h === 'Parametros' || h === 'Saidas' ? 60 : 18 }));

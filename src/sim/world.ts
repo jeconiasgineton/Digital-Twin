@@ -2,6 +2,7 @@ import type { EquipmentKind, Layout, LayoutElement, Scenario } from '../model/ty
 import { arrivalProfile } from '../model/traffic';
 import { validateEquipment } from '../model/equipment';
 import { STEP_LABEL, validateProcess } from '../model/process';
+import { EXP_LABEL, effectiveSteps, validateExpedition } from '../model/expedition';
 import { aisleCodeOf, aisleOf, areaCapacity } from '../model/areas';
 import {
   type DistField, type NavGrid, type Pt, astar, buildNavGrid, cellCenter, cellOf, dijkstraField, dist, fieldPath,
@@ -247,10 +248,20 @@ export function validate(layout: Layout, sc: Scenario): ValidationIssue[] {
   if (fullOn && outStages === 0) out.push({ level: 'aviso', msg: 'Palete full sem stage de expedição: os paletes serão levados à doca de saída (use a ferramenta "Stage" e marque "Expedição").' });
   if (fullOn && sc.picking.full.mode === 'phased' && !sc.picking.full.step1With.some((k) => k !== 'forklift' && (sc.equipment.find((e) => e.kind === k)?.count ?? 0) > 0))
     out.push({ level: 'aviso', msg: 'Palete full faseado sem equipamento de etapa 2 (paleteira/transpaleteira/AMR com quantidade > 0): a empilhadeira fará o transporte do stage.' });
-  if (sc.picking.loadFrom === 'stage') {
+  const exp = sc.expedition;
+  if (sc.picking.loadFrom === 'stage' || exp.mode !== 'basic') {
     if (!fullOn && sc.picking.mode !== 'pallet') out.push({ level: 'erro', msg: 'Carga a partir do stage sem fonte de paletes: ative a separação por palete ou o palete full, senão os caminhões de expedição ficam parados na doca.' });
     if (outStages === 0) out.push({ level: 'aviso', msg: 'Carga a partir do stage, mas o layout não tem stage de expedição (a espera não será limitada).' });
-    if (sc.picking.loadWith.length === 0) out.push({ level: 'erro', msg: 'Carga a partir do stage sem nenhum equipamento permitido.' });
+    if (exp.mode === 'basic' && sc.picking.loadWith.length === 0) out.push({ level: 'erro', msg: 'Carga a partir do stage sem nenhum equipamento permitido.' });
+  }
+  if (exp.mode !== 'basic') {
+    out.push(...validateExpedition(exp));
+    const units = (k: string) => (k === 'forklift' ? sc.forklifts.count : sc.equipment.find((e) => e.kind === k)?.count ?? 0);
+    for (const s of effectiveSteps(exp)) {
+      if ('resource' in s && ((s.resource === 'checker' && sc.checkers.count < 1) || (s.resource === 'worker' && sc.workers.count < 1)))
+        out.push({ level: 'aviso', msg: `Expedição: "${s.label || EXP_LABEL[s.type]}" usa ${s.resource === 'checker' ? 'conferentes' : 'operários'}, mas a quantidade é 0: a etapa passa só com o tempo, sem recurso.` });
+      if (s.type === 'board' && s.with.length && !s.with.some((k) => units(k) > 0)) out.push({ level: 'aviso', msg: 'Expedição: nenhum equipamento do embarque tem quantidade > 0; a empilhadeira fará o trabalho.' });
+    }
   }
   if (sc.picking.mode === 'pallet') {
     if (layout.elements.filter((e) => e.type === 'stage' && e.stageKind === 'out').length === 0)

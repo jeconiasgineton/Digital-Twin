@@ -1,6 +1,7 @@
 import type { ArrivalSpec, BreakSpec, Dist, DistKind, EquipmentSpec, FleetSpec, PeopleRole, Scenario, VehicleType } from '../model/types';
 import { EQUIPMENT_NAMES } from '../model/equipment';
 import { buildWorld, slotLabel } from '../sim/world';
+import { EXPEDITION_SOURCE, EXP_HELP, EXP_LABEL, defaultExpeditionSteps, makeExpStep, type ExpStep, type ExpStepType } from '../model/expedition';
 import { PICKING_SOURCE, ROUTE_LABEL, parseAddresses, type PickRoute } from '../model/picking';
 import { PEOPLE_ROLES, ROLE_NAMES, breakWaves, defaultBreak, presetVehicle } from '../model/traffic';
 import { catalog, defaultEquipment, NIOSH_LOAD_KG } from '../model/equipment';
@@ -171,6 +172,66 @@ function arrivalBox(ctx: AppCtx, title: string, a: ArrivalSpec): HTMLElement {
     );
   else body.push(h('p', { class: 'note' }, 'No modo aleatório as chegadas já são irregulares; atrasos valem para os modos intervalo fixo e agendado.'));
   return h('details', { open: true }, h('summary', null, title), h('div', { class: 'body', style: { display: 'grid', gap: '7px' } }, body));
+}
+
+const STANDARD_ORDER_UI: ExpStepType[] = ['conference', 'reconcile', 'customize', 'board', 'register', 'seal'];
+
+/** cartão de uma etapa da expedição */
+function expStepCard(ctx: AppCtx, st: ExpStep, i: number, editable: boolean): HTMLElement {
+  const sc = ctx.scenario;
+  const ch = () => ctx.scenarioChanged();
+  const steps = sc.expedition.steps;
+  const person = (get: () => 'checker' | 'worker', set: (v: 'checker' | 'worker') => void) => selField('Quem faz', get, (v) => { set(v); ch(); }, [['checker', 'Conferente'], ['worker', 'Operário']]);
+  const distTable = (rows: [string, () => any, (d: any) => void][]) => h('table', null,
+    h('thead', null, h('tr', null, ['Tempo (s)', 'Distribuição', 'P1', 'P2', 'P3'].map((t) => h('th', null, t)))),
+    h('tbody', null, rows.map(([lab, get, set]) => distRow(ctx, lab, get, (d) => { set(d); ch(); }))));
+  const f: HTMLElement[] = [h('p', { class: 'note' }, EXP_HELP[st.type])];
+  switch (st.type) {
+    case 'conference':
+      f.push(
+        selField('Quando', () => st.timing, (v) => { st.timing = v; ch(); }, [['simultaneous', 'Simultânea: enquanto a separação acontece'], ['later', 'Posterior: com a carga completa']]),
+        person(() => st.resource, (v) => (st.resource = v)),
+        distTable([['Palete full (fixo)', () => st.fullTime, (d) => (st.fullTime = d)], ['Palete de picking (por caixa)', () => st.perBox, (d) => (st.perBox = d)]]),
+      );
+      break;
+    case 'reconcile':
+      f.push(
+        person(() => st.resource, (v) => (st.resource = v)),
+        numField('Cargas com divergência', () => st.divergencePct * 100, (v) => { st.divergencePct = Math.min(1, Math.max(0, v / 100)); ch(); }, { step: 1, min: 0, max: 100, unit: '%', title: '0 = o batimento sempre bate' }),
+        distTable([['Batimento (por carga)', () => st.time, (d) => (st.time = d)], ['Correção (se divergir)', () => st.correctionTime, (d) => (st.correctionTime = d)]]),
+      );
+      break;
+    case 'customize':
+      f.push(
+        person(() => st.resource, (v) => (st.resource = v)),
+        numField('Paletes de picking em cada carga', () => st.pickPct * 100, (v) => { st.pickPct = Math.min(1, Math.max(0, v / 100)); ch(); ctx.rerender(); }, { step: 5, min: 0, max: 100, unit: '%', title: 'Percentual de paletes da carga que vieram do picking e precisam de customização; o resto foi separado inteiro' }),
+        h('p', { class: 'note' }, `≈ ${(st.pickPct * Math.max(1, sc.expedition.palletsPerLoad)).toFixed(1)} paletes customizados por carga de ${sc.expedition.palletsPerLoad}.`),
+        distTable([['Customização (por palete)', () => st.time, (d) => (st.time = d)]]),
+      );
+      break;
+    case 'board':
+      f.push(h('b', null, 'Equipamentos permitidos (o disponível é acionado)'),
+        h('div', { class: 'row' }, (['forklift', 'palletJack', 'palletTruck', 'amr'] as const).map((k) =>
+          h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: st.with.includes(k), onchange: (ev: Event) => {
+            st.with = (ev.target as HTMLInputElement).checked ? [...new Set([...st.with, k])] : st.with.filter((x) => x !== k);
+            ch(); ctx.rerender();
+          } }), EQUIPMENT_NAMES[k]))),
+        h('p', { class: 'note' }, 'Paleteira manual leva um operário do pool de operários. O tempo dentro do veículo usa o comprimento do baú; um equipamento por vez.'));
+      break;
+    case 'register':
+    case 'seal':
+    case 'task':
+      f.push(person(() => st.resource, (v) => (st.resource = v)), distTable([[st.type === 'register' ? 'Registro (por carga)' : st.type === 'seal' ? 'Lacre (por carga)' : 'Tarefa (por carga)', () => st.time, (d) => (st.time = d)]]));
+      if (st.type === 'task') f.unshift(textField('Nome da etapa', () => st.label ?? '', (v) => { st.label = v || undefined; ch(); ctx.rerender(); }));
+      break;
+  }
+  const head = h('div', { class: 'row sp' }, h('span', null, `${i + 1}. ${st.label || EXP_LABEL[st.type]}`),
+    editable ? h('div', { class: 'row' },
+      h('label', { class: 'chk', title: 'Desativada, a etapa é pulada' }, h('input', { type: 'checkbox', checked: st.enabled, onchange: (ev: Event) => { st.enabled = (ev.target as HTMLInputElement).checked; ch(); ctx.rerender(); } }), 'ativa'),
+      h('button', { class: 'b sm', disabled: i === 0, onclick: () => { [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]]; ch(); ctx.rerender(); } }, '↑'),
+      h('button', { class: 'b sm', disabled: i === steps.length - 1, onclick: () => { [steps[i + 1], steps[i]] = [steps[i], steps[i + 1]]; ch(); ctx.rerender(); } }, '↓'),
+      h('button', { class: 'b danger sm', onclick: () => { steps.splice(i, 1); ch(); ctx.rerender(); } }, '✕')) : null);
+  return h('details', { open: false }, h('summary', null, head), h('div', { class: 'body', style: { display: 'grid', gap: '7px', opacity: st.enabled || !editable ? '1' : '0.55' } }, f));
 }
 
 function vehicleCard(ctx: AppCtx, v: VehicleType): HTMLElement {
@@ -388,6 +449,24 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
           h('tbody', null, distRow(ctx, 'Espera até repor o produto (s)', () => sc.picking.stockout.delay, (d) => ((sc.picking.stockout.delay = d), ch()))))] : []),
         h('p', { class: 'note' }, 'Os endereços de picking são o nível mais baixo dos racks, no formato rua + estante + nível 1 (ex.: A011). O stage de expedição é o elemento "Stage" marcado como expedição no layout. A produtividade sai em caixas por hora de trabalho do separador, calculada a partir dos tempos acima.'),
       ] : [h('p', { class: 'note' }, 'No modo antigo o operador coleta as caixas e as leva à esteira. Escolha "Picking por palete" para simular a rota, a leitura de endereço, o limite do palete e os furos de estoque.')]),
+    ], false),
+    section('Expedição (conferência, customização, embarque e liberação)', [
+      selField('Formato da expedição', () => sc.expedition.mode, (v) => { sc.expedition.mode = v; ch(); ctx.rerender(); }, [
+        ['basic', 'Básico (como antes: carga direta, sem conferência)'], ['standard', 'Padrão: bloco pronto (conferir, batimento, customizar, embarcar, registrar, lacrar)'], ['steps', 'Etapas configuráveis: monte o seu modelo'],
+      ]),
+      ...(sc.expedition.mode === 'basic' ? [h('p', { class: 'note' }, 'No formato básico o caminhão carrega e sai. Escolha "Padrão" ou "Etapas configuráveis" para a carga passar por conferência, customização, embarque, registro e lacre; nesses formatos a carga sai do stage de expedição (é preciso ter separação por palete ou palete full).')] : [
+        numField('Paletes por carga expedida', () => sc.expedition.palletsPerLoad, (v) => { sc.expedition.palletsPerLoad = Math.max(1, Math.round(v)); ch(); ctx.rerender(); }, { step: 1, min: 1, title: 'Cada caminhão de saída expede sempre essa quantidade de paletes' }),
+        h('p', { class: 'note' }, sc.expedition.mode === 'standard'
+          ? 'No formato padrão a sequência é fixa; você edita os parâmetros de cada etapa. A conferência pode ser simultânea à separação ou posterior; o embarque só começa depois do batimento e da customização; depois do embarque o conferente registra e lacra o baú, e só então o veículo é liberado (o motorista pode ou não acompanhar: não muda o tempo).'
+          : 'Etapas configuráveis: ative, desative, reordene, acrescente ou remova etapas. O app avisa se a ordem foge da regra (conferir e customizar antes de embarcar; registrar e lacrar depois).'),
+        ...(sc.expedition.mode === 'standard' ? STANDARD_ORDER_UI.map((t) => { const st = sc.expedition.steps.find((x) => x.type === t); return st ? expStepCard(ctx, st, STANDARD_ORDER_UI.indexOf(t), false) : null; }).filter((x): x is HTMLElement => !!x)
+          : sc.expedition.steps.map((st, i) => expStepCard(ctx, st, i, true))),
+        ...(sc.expedition.mode === 'steps' ? [
+          h('div', { class: 'row' }, (['conference', 'reconcile', 'customize', 'board', 'register', 'seal', 'task'] as ExpStepType[]).map((t) => h('button', { class: 'b sm', onclick: () => { sc.expedition.steps.push(makeExpStep(t)); ch(); ctx.rerender(); } }, `+ ${EXP_LABEL[t]}`))),
+        ] : []),
+        h('button', { class: 'b sm', onclick: () => { sc.expedition.steps = defaultExpeditionSteps(); ch(); ctx.rerender(); } }, 'Restaurar etapas e tempos padrão'),
+        h('p', { class: 'note' }, EXPEDITION_SOURCE),
+      ]),
     ], false),
     section('Separação de palete full e carga do caminhão', [
       h('p', { class: 'note' }, 'Palete full: a empilhadeira retira o palete inteiro do endereço e o leva ao stage de expedição. O pedido é definido por quantidade de paletes e percentual das curvas A, B e C.'),
