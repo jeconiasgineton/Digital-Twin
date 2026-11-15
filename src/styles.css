@@ -139,3 +139,35 @@ td.ok, .pill.ok { color: var(--ok); } td.warn, .pill.warn { color: var(--warn); 
 .guide .chip { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--bg); color: var(--mut); font-size: 11px; font-weight: 700; cursor: pointer; }
 .guide .chip.on { background: var(--acc, #38bdf8); color: #0b1220; border-color: transparent; }
 .guide .chip:hover { border-color: var(--acc, #38bdf8); }
+
+/* ---- celular e tablet estreito: uma coluna, a página rola ---- */
+@media (max-width: 760px) {
+  html, body { overflow: auto; height: auto; }
+  #app { grid-template-rows: auto auto auto; height: auto; min-height: 100vh; }
+  #top { padding: 6px 10px; flex-wrap: wrap; white-space: normal; overflow: visible; row-gap: 6px; min-height: 48px; }
+  #top .brand { margin-right: 4px; font-size: 14px; }
+  #top .sep { display: none; }
+  #top button, #top .b { font-size: 11.5px; padding: 5px 8px; }
+  main { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 52vh auto; }
+  #side, #panel, #stage { min-width: 0; max-width: 100%; }
+  #tools { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--line); padding: 6px; gap: 2px; }
+  #tools > * { flex: 0 0 auto; }
+  #stage { height: 52vh; border-bottom: 1px solid var(--line); }
+  #hud { left: 6px; top: 6px; right: 6px; max-width: none; }
+  #hud > * { max-width: 100%; }
+  #hint { display: none; }
+  #side { border-left: 0; min-height: 0; }
+  #tabs { overflow-x: auto; }
+  #tabs button { flex: 0 0 auto; padding: 10px 12px; font-size: 12px; }
+  #panel { overflow: visible; flex: none; padding: 10px; }
+  .guide-chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+  .guide .row.sp { flex-direction: column; align-items: stretch; }
+  .guide .row.sp > .row { justify-content: space-between; }
+  details > summary { font-size: 13px; padding: 12px; }
+  details > .body { padding: 4px 10px 12px; }
+  label.f { grid-template-columns: 1fr 96px 28px; }
+  .cards { grid-template-columns: 1fr 1fr; }
+  table { display: block; overflow-x: auto; max-width: 100%; }
+  input, select { font-size: 16px; min-height: 36px; }
+}
+.hint { margin: 0 0 4px; padding: 8px 10px; border-left: 3px solid var(--acc); background: var(--bg3); border-radius: 4px; color: var(--mut); font-size: 12px; line-height: 1.45; }

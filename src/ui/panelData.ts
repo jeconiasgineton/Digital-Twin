@@ -16,9 +16,28 @@ import { seriesChart } from './charts';
 const sectionOpen = new Map<string, boolean>();
 
 /** seções começam recolhidas: o usuário abre cada uma conforme preenche */
+/** o que preencher em cada seção: aparece no topo dela */
+const SECTION_HINTS: Record<string, string> = {
+  'Horizonte e metas': 'Quantas horas e dias simular, quando o turno começa e as metas de utilização e de espera. Comece por aqui: define o período que todos os outros dados usam.',
+  'Equipamentos (catálogo)': 'Quantas empilhadeiras, paleteiras, transpaleteiras e AMRs você tem, com velocidade, capacidade e custo. Quantidade 0 significa que o equipamento não é usado.',
+  'Pessoas': 'Quantos operários e conferentes trabalham, com a disponibilidade de cada um (quebras e paradas) e a carga manual máxima por pessoa.',
+  'Veículos e chegadas': 'Os tipos de caminhão (carreta, truque, toco, VUC, picape) com o tamanho do baú e os paletes por carga, além de como os veículos chegam: aleatório, em intervalo fixo ou em horário marcado.',
+  'Armazenagem': 'Como o palete é guardado: direto da doca ao endereço, ou em duas etapas (rua + equipamento sem elevação), e quais equipamentos fazem cada etapa.',
+  'Separação (picking por palete)': 'Como os pedidos são separados: caixas por pedido, limite de caixas por palete, rota (em U ou zigue-zague), área de coleta e furos de estoque. Só vale se a separação por palete estiver ativa.',
+  'Expedição (conferência, customização, embarque e liberação)': 'O que acontece com a carga antes da saída do caminhão: conferência, batimento com o pedido, customização de paletes, embarque e lacre. Escolha o formato básico ou as etapas.',
+  'Separação de palete full e carga do caminhão': 'Pedidos de palete inteiro (retirado direto do endereço) e de onde o caminhão de saída carrega: do rack ou do stage de expedição.',
+  'Recebimento: descarga, avarias e triagem': 'Quem descarrega o caminhão, a chance de avaria em paletes e caixas e o que acontece com o palete avariado (triagem).',
+  'Jornada e intervalos': 'Pausas e almoço das equipes: quando acontecem, quem para e em que ondas, para não parar tudo de uma vez.',
+  'Demanda por hora': 'Quantos caminhões chegam, saem e quantos pedidos entram em cada hora do turno. Use o total do dia e o formato (pico ou uniforme) para distribuir pelas horas.',
+  'Carga e pedidos': 'Quantos paletes cada caminhão de entrada e de saída traz, com média, desvio e capacidade máxima.',
+  'Tempos de operação (segundos)': 'Quanto tempo leva cada movimento: descarregar, guardar, pegar caixa, conferir palete. São premissas típicas: substitua pelos tempos medidos na sua operação.',
+  'Estoque e endereçamento': 'Ocupação inicial dos racks, quanto tempo um palete fica guardado e a regra para escolher o endereço, além da lista de SKUs e a curva ABC.',
+};
+
 function section(title: string, body: (Element | null)[], _open = true) {
   void _open;
-  const d = h('details', { class: 'sec', open: sectionOpen.get(title) ?? false }, h('summary', null, title), h('div', { class: 'body' }, body));
+  const hint = SECTION_HINTS[title];
+  const d = h('details', { class: 'sec', open: sectionOpen.get(title) ?? false }, h('summary', null, title), h('div', { class: 'body' }, hint ? h('p', { class: 'hint' }, hint) : null, body));
   d.addEventListener('toggle', () => sectionOpen.set(title, d.open));
   return d;
 }
