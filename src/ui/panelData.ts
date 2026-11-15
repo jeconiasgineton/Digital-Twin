@@ -15,10 +15,49 @@ import { seriesChart } from './charts';
 /** seções abertas pelo usuário: sobrevivem aos redesenhos do painel (ex.: ao adicionar um tipo de veículo) */
 const sectionOpen = new Map<string, boolean>();
 
-function section(title: string, body: (Element | null)[], open = true) {
-  const d = h('details', { open: sectionOpen.get(title) ?? open }, h('summary', null, title), h('div', { class: 'body' }, body));
+/** seções começam recolhidas: o usuário abre cada uma conforme preenche */
+function section(title: string, body: (Element | null)[], _open = true) {
+  void _open;
+  const d = h('details', { class: 'sec', open: sectionOpen.get(title) ?? false }, h('summary', null, title), h('div', { class: 'body' }, body));
   d.addEventListener('toggle', () => sectionOpen.set(title, d.open));
   return d;
+}
+
+/**
+ * Guia de preenchimento: uma seção aberta por vez, índice numerado no topo e botão "Próxima seção".
+ * Não muda os dados; só organiza a leitura e a ordem de preenchimento.
+ */
+function wireGuide(root: HTMLElement) {
+  const secs = [...root.querySelectorAll<HTMLDetailsElement>(':scope > details.sec')];
+  const bar = h('div', { class: 'guide' });
+  const bump = () => {
+    const cur = secs.findIndex((d) => d.open);
+    bar.replaceChildren(
+      h('div', { class: 'guide-chips' }, secs.map((d, i) => h('button', {
+        class: `chip${d.open ? ' on' : ''}`,
+        title: d.querySelector('summary')?.textContent ?? '',
+        onclick: () => open(i),
+      }, String(i + 1)))),
+      h('div', { class: 'row sp' },
+        h('span', { class: 'note' }, cur >= 0 ? `Seção ${cur + 1} de ${secs.length}: ${secs[cur].querySelector('summary')?.textContent ?? ''}` : 'Escolha uma seção para começar.'),
+        h('span', { class: 'row' },
+          h('button', { class: 'b sm', onclick: () => open(cur > 0 ? cur - 1 : 0), disabled: cur <= 0 }, '← Anterior'),
+          h('button', { class: 'b sm pri', onclick: () => open(cur < 0 ? 0 : Math.min(secs.length - 1, cur + 1)), disabled: cur >= secs.length - 1 }, 'Próxima seção →'),
+        ),
+      ),
+    );
+  };
+  const open = (i: number) => {
+    secs.forEach((d, k) => { d.open = k === i; });
+    bump();
+    secs[i]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  };
+  secs.forEach((d) => d.addEventListener('toggle', () => {
+    if (d.open) secs.forEach((o) => { if (o !== d && o.open) o.open = false; });
+    bump();
+  }));
+  root.prepend(bar);
+  bump();
 }
 
 const sum = (a: number[]) => a.reduce((s, v) => s + v, 0);
@@ -583,6 +622,7 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
       skuTable(ctx),
     ], false),
   );
+  wireGuide(root);
   return root;
 }
 

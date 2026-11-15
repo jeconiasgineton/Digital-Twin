@@ -132,3 +132,10 @@ td.ok, .pill.ok { color: var(--ok); } td.warn, .pill.warn { color: var(--warn); 
 .ins-row select, .ins-row input[type=number], .ins select, .ins input[type=text] { background: var(--bg3); color: var(--tx); border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; font-size: 12px; }
 .ins .row, .ins-row .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 @media (max-width: 900px) { .pe-main { grid-template-columns: 1fr; grid-template-rows: auto 1fr auto; } }
+
+/* guia de preenchimento (aba Dados): índice numerado e navegação entre seções */
+.guide { background: var(--bg2); padding: 8px 0 10px; margin-bottom: 8px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+.guide-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.guide .chip { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 1px solid var(--line); background: var(--bg); color: var(--mut); font-size: 11px; font-weight: 700; cursor: pointer; }
+.guide .chip.on { background: var(--acc, #38bdf8); color: #0b1220; border-color: transparent; }
+.guide .chip:hover { border-color: var(--acc, #38bdf8); }
