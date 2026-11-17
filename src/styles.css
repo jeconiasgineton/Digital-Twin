@@ -171,3 +171,14 @@ td.ok, .pill.ok { color: var(--ok); } td.warn, .pill.warn { color: var(--warn); 
   input, select { font-size: 16px; min-height: 36px; }
 }
 .hint { margin: 0 0 4px; padding: 8px 10px; border-left: 3px solid var(--acc); background: var(--bg3); border-radius: 4px; color: var(--mut); font-size: 12px; line-height: 1.45; }
+
+/* biblioteca de modelos ("Meus modelos") */
+.lib-modal { width: min(760px, 100%); }
+.lib-body { padding: 12px 16px; overflow-y: auto; display: grid; gap: 10px; }
+.lib-list { display: grid; gap: 8px; }
+.lib-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.lib-row.cur { border-color: var(--acc); }
+.lib-main { display: grid; gap: 3px; min-width: 0; flex: 1 1 220px; }
+.lib-name { font-weight: 700; font-size: 13px; background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 3px 5px; }
+.lib-name:hover, .lib-name:focus { border-color: var(--line); background: var(--bg3); }
+@media (max-width: 760px) { .lib-row .row { width: 100%; } }

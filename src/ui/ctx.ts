@@ -19,7 +19,7 @@ export interface AppCtx {
   /** layout mudou */
   layoutChanged(kind?: string): void;
   loadLayout(l: Layout, fit?: boolean): void;
-  loadScenario(s: Scenario): void;
+  loadScenario(s: Scenario, asNew?: boolean): void;
   rerender(): void;
   openTab(name: string): void;
   runMonteCarlo(): Promise<void>;

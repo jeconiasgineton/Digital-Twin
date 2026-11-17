@@ -8,8 +8,12 @@ import { runInWorker } from './sim/client';
 import type { SweepPoint } from './sim/runner';
 import type { AppCtx } from './ui/ctx';
 import { download, fmt, h, toast } from './ui/dom';
+import { exportTemplate } from './io/excel';
 import { Editor, TOOL_LABEL, type Tool } from './ui/editor';
 import { loadExcelFile, pickExcel, downloadTemplate, renderDataPanel } from './ui/panelData';
+import { CURRENT_KEY, createModel, duplicateModel, nextName, readLibrary, removeModel, renameModel, upsertModel, writeLibrary, type KeyValueStore, type SavedModel } from './model/library';
+import { openLibraryModal } from './ui/libraryPanel';
+import { blankLayout } from './model/blank';
 import { renderLayoutPanel } from './ui/panelLayout';
 import { renderResultsPanel } from './ui/panelResults';
 import { renderSimPanel } from './ui/panelSim';
@@ -21,8 +25,24 @@ import { SceneView } from './view/scene';
 const $ = (id: string) => document.getElementById(id)!;
 
 /* ------------------------------ estado ------------------------------ */
+/** armazenamento no navegador (pode falhar em modo privativo: a aplicação segue sem salvar) */
+const storage: KeyValueStore = {
+  getItem: (k) => { try { return window.localStorage.getItem(k); } catch { return null; } },
+  setItem: (k, v) => { window.localStorage.setItem(k, v); },
+};
+let currentId: string | null = (() => { try { return window.localStorage.getItem(CURRENT_KEY); } catch { return null; } })();
+let persistWarned = false;
+
 let scenario: Scenario = defaultScenario();
 let layout: Layout = generateLayout(defaultLayoutParams());
+{
+  // retoma o último modelo aberto
+  const m = readLibrary(storage).find((x) => x.id === currentId);
+  if (m) {
+    scenario = m.scenario;
+    layout = m.layout;
+  }
+}
 
 const view = new SceneView($('viewport'));
 view.levelHeight = scenario.levelHeight;
@@ -56,7 +76,8 @@ const ctx: AppCtx = {
     if (fit) view.fit();
     schedule(0);
   },
-  loadScenario(s) {
+  loadScenario(s, asNew = false) {
+    if (asNew) startModel(nextName(readLibrary(storage), 'Importado'), s, layout);
     scenario = s;
     ctx.sweeps = {};
     ctx.result = null;
@@ -93,6 +114,75 @@ ctx.editor = new Editor(view, () => layout, {
 });
 
 /* ---------------------- recalculo com debounce ---------------------- */
+/** salva o estado atual no modelo aberto (chamado a cada recálculo, já com atraso) */
+function persist() {
+  if (!currentId) return;
+  const lib = readLibrary(storage);
+  const prev = lib.find((m) => m.id === currentId);
+  const next = upsertModel(lib, { id: currentId, name: prev?.name ?? 'Modelo', updatedAt: new Date().toISOString(), scenario, layout });
+  const r = writeLibrary(storage, next);
+  if (!r.ok && !persistWarned) {
+    persistWarned = true;
+    toast(r.error, 'err', 9000);
+  }
+}
+
+/** cria um modelo novo na biblioteca e o torna o atual */
+function startModel(name: string, s: Scenario, l: Layout): SavedModel {
+  const lib = readLibrary(storage);
+  const m = createModel(lib, name, s, l);
+  writeLibrary(storage, [...lib, m]);
+  currentId = m.id;
+  try { window.localStorage.setItem(CURRENT_KEY, m.id); } catch { /* sem armazenamento: segue só em memória */ }
+  return m;
+}
+
+function openModel(id: string) {
+  const m = readLibrary(storage).find((x) => x.id === id);
+  if (!m) return;
+  currentId = id;
+  try { window.localStorage.setItem(CURRENT_KEY, id); } catch { /* segue em memória */ }
+  ctx.loadScenario(m.scenario);
+  ctx.loadLayout(m.layout, true);
+  toast(`Modelo "${m.name}" aberto.`);
+}
+
+function newBlankModel() {
+  const s = defaultScenario();
+  const l = blankLayout();
+  const m = startModel(l.name, s, l);
+  ctx.loadScenario(s);
+  ctx.loadLayout(l, true);
+  openTab('layout');
+  toast(`"${m.name}" criado. Desenhe o galpão na aba Layout e preencha os dados na aba Dados.`);
+}
+
+const libraryActions = {
+  storage,
+  currentId: () => currentId,
+  open: openModel,
+  create: newBlankModel,
+  duplicate(id: string) {
+    const lib = readLibrary(storage);
+    const copy = duplicateModel(lib, id);
+    if (copy) writeLibrary(storage, [...lib, copy]);
+  },
+  remove(id: string) {
+    const next = removeModel(readLibrary(storage), id);
+    writeLibrary(storage, next);
+    if (id === currentId) {
+      if (next.length) openModel(next[0].id);
+      else newBlankModel();
+    }
+  },
+  rename(id: string, name: string) {
+    writeLibrary(storage, renameModel(readLibrary(storage), id, name));
+  },
+  exportXlsx(m: SavedModel) {
+    void exportTemplate(m.scenario, m.layout).then((buf) => download(`${m.name.replace(/[^\wÀ-ú -]+/g, '_')}.xlsx`, buf, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'));
+  },
+};
+
 let timer = 0;
 function schedule(delay = 450) {
   clearTimeout(timer);
@@ -100,6 +190,7 @@ function schedule(delay = 450) {
 }
 
 function recompute() {
+  persist();
   try {
     ctx.capacity = analyzeCapacity(scenario, layout);
   } catch (e) {
@@ -224,14 +315,16 @@ function renderTop() {
     h('button', { class: 'b pri', onclick: () => pickExcel(ctx) }, '📥 Importar Excel'),
     h('button', { class: 'b', onclick: () => downloadTemplate(ctx) }, '📄 Modelo .xlsx'),
     h('div', { class: 'sep' }),
-    h('button', { class: 'b', onclick: () => { ctx.loadScenario(defaultScenario()); ctx.loadLayout(generateLayout(defaultLayoutParams()), true); toast('Exemplo carregado.'); } }, 'Exemplo'),
-    h('button', { class: 'b', title: 'Começa do zero: parâmetros padrão e piso vazio para você desenhar o galpão', onclick: () => {
-      if (!window.confirm('Criar uma simulação nova em branco? O trabalho atual será substituído.')) return;
-      ctx.loadScenario(defaultScenario());
-      ctx.loadLayout({ name: 'Novo galpão', floor: { width: 60, depth: 40 }, elements: [] }, true);
-      openTab('layout');
-      toast('Nova simulação em branco. Desenhe o galpão na aba Layout e preencha os dados na aba Dados.');
-    } }, '＋ Nova (em branco)'),
+    h('button', { class: 'b', onclick: () => {
+      const s = defaultScenario();
+      const l = generateLayout(defaultLayoutParams());
+      startModel('Exemplo', s, l);
+      ctx.loadScenario(s);
+      ctx.loadLayout(l, true);
+      toast('Exemplo carregado como um novo modelo.');
+    } }, 'Exemplo'),
+    h('button', { class: 'b', onclick: () => openLibraryModal(libraryActions) }, '📚 Meus modelos'),
+    h('button', { class: 'b pri', title: 'Cria um modelo novo, em branco, sem apagar os outros', onclick: newBlankModel }, '＋ Nova (em branco)'),
     h('button', { class: 'b', onclick: () => { openTab('results'); ctx.runMonteCarlo(); } }, '▶ Rodar Monte Carlo'),
     h('div', { style: { flex: '1' } }),
     h('span', { class: 'note', id: 'status' }, 'Arraste uma planilha .xlsx para a tela'),
@@ -301,6 +394,8 @@ window.addEventListener('drop', (e) => {
   else if (/\.json$/i.test(f.name)) f.text().then((t) => { try { ctx.loadLayout(JSON.parse(t), true); } catch { toast('JSON inválido', 'err'); } });
 });
 
+// primeira abertura (ou modelo atual apagado): cria o modelo inicial para ele ficar salvo na biblioteca
+if (!readLibrary(storage).some((m) => m.id === currentId)) startModel('Modelo inicial', scenario, layout);
 playback.playing = true;
 recompute();
 openTab('layout');

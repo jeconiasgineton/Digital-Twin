@@ -84,7 +84,7 @@ const sum = (a: number[]) => a.reduce((s, v) => s + v, 0);
 export async function loadExcelFile(ctx: AppCtx, file: File) {
   try {
     const r = await importWorkbook(await file.arrayBuffer());
-    ctx.loadScenario(r.scenario);
+    ctx.loadScenario(r.scenario, true); // planilha importada vira um modelo novo na biblioteca
     if (r.layout) ctx.loadLayout(r.layout, true);
     toast(`Planilha "${file.name}" importada.\nAbas lidas: ${r.found.join(', ') || '—'}` + (r.warnings.length ? `\n\nAvisos:\n• ${r.warnings.join('\n• ')}` : ''), r.warnings.length ? 'warn' : 'ok', 9000);
     ctx.openTab('sim');
