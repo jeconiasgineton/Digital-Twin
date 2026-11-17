@@ -150,7 +150,7 @@ function openModel(id: string) {
 function newBlankModel() {
   const s = blankScenario();
   const l = blankLayout();
-  const m = startModel(l.name, s, l);
+  const m = startModel('Novo modelo', s, l);
   ctx.loadScenario(s);
   ctx.loadLayout(l, true);
   openTab('layout');

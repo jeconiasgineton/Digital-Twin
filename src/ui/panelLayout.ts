@@ -92,6 +92,10 @@ export function renderLayoutPanel(ctx: AppCtx): HTMLElement {
   const issues = validate(ctx.layout, ctx.scenario);
 
   root.append(
+    section('Galpão', [
+      textField('Nome do galpão', () => ctx.layout.name ?? '', (v) => { ctx.layout.name = v.trim() || ctx.layout.name; ctx.layoutChanged('edit'); }),
+      h('p', { class: 'note' }, 'O nome do galpão é separado do nome do modelo (em "Meus modelos"): um mesmo modelo pode ter mais de um galpão.'),
+    ], true),
     section('Montagem do modelo (passo a passo)', [renderBuildGuide(ctx)], true),
     section('Elemento selecionado', propertiesBox(ctx)),
     section('Resumo do layout', [
