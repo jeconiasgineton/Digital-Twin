@@ -1029,6 +1029,7 @@ export class SimModel {
       const k = Math.min(left, Math.max(1, Math.round(this.rngPick.lognormal(sc.cartonsPerLine.mean, sc.cartonsPerLine.sd))));
       const cls = this.rngPick.pick(weights);
       const list = this.pickPos[cls];
+      if (!list.length) break; // sem endereços de coleta (galpão sem racks): o pedido fica sem linhas
       const pos = list[this.rngPick.int(list.length)];
       this.world.nav.key(pos.pt); // campo de distância calculado uma vez por ponto
       stops.push({ pos, boxes: k });
@@ -1036,6 +1037,10 @@ export class SimModel {
     }
     const stage = this.stageOutPt;
     this.world.nav.key(stage);
+    if (!stops.length) {
+      if (this.measuring) this.c.stockouts++;
+      return;
+    }
     const parts = splitAmongPickers(stops, pk.pickersPerOrder);
     const done = new Countdown(this.sim, parts.length);
     for (const part of parts) this.sim.spawn(this.pickerRoute(part, done, tArr, pk));
@@ -1531,12 +1536,17 @@ export class SimModel {
     for (let i = 0; i < nLines; i++) {
       const cls = this.pickSku().cls;
       const band = this.pickBands[cls];
+      if (!band.length) continue; // galpão sem racks de picking: a linha não tem de onde sair
       const rack = band[this.rngRoute.int(band.length)];
       const cartons = Math.max(1, Math.round(this.rngSvc.lognormal(sc.cartonsPerLine.mean, sc.cartonsPerLine.sd)));
       stops.push({ p: this.accessPoint(rack), cartons });
       totalCartons += cartons;
     }
     // ordena paradas por proximidade (vizinho mais próximo) para modelar roteirização do picking
+    if (!stops.length) {
+      if (this.measuring) c.stockouts++;
+      return; // pedido sem linhas (sem racks): não é atendido
+    }
     const wk: Agent = yield this.workers.request(stops[0].p);
     const route: typeof stops = [];
     let cur: Pt = { x: wk.x, z: wk.z };

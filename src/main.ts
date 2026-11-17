@@ -225,6 +225,13 @@ function renderTop() {
     h('button', { class: 'b', onclick: () => downloadTemplate(ctx) }, '📄 Modelo .xlsx'),
     h('div', { class: 'sep' }),
     h('button', { class: 'b', onclick: () => { ctx.loadScenario(defaultScenario()); ctx.loadLayout(generateLayout(defaultLayoutParams()), true); toast('Exemplo carregado.'); } }, 'Exemplo'),
+    h('button', { class: 'b', title: 'Começa do zero: parâmetros padrão e piso vazio para você desenhar o galpão', onclick: () => {
+      if (!window.confirm('Criar uma simulação nova em branco? O trabalho atual será substituído.')) return;
+      ctx.loadScenario(defaultScenario());
+      ctx.loadLayout({ name: 'Novo galpão', floor: { width: 60, depth: 40 }, elements: [] }, true);
+      openTab('layout');
+      toast('Nova simulação em branco. Desenhe o galpão na aba Layout e preencha os dados na aba Dados.');
+    } }, '＋ Nova (em branco)'),
     h('button', { class: 'b', onclick: () => { openTab('results'); ctx.runMonteCarlo(); } }, '▶ Rodar Monte Carlo'),
     h('div', { style: { flex: '1' } }),
     h('span', { class: 'note', id: 'status' }, 'Arraste uma planilha .xlsx para a tela'),
