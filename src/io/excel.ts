@@ -198,6 +198,7 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
   let hasParams = false;
 
   // ---- Parâmetros ----
+  const pm: Record<string, any> = {}; // valores da aba Parametros, também usados pelo layout (nome, piso, galpão em branco)
   const wsP = findSheet(wb, ['Parametros', 'Parâmetros', 'Parameters', 'Config']);
   if (wsP) {
     found.push('Parâmetros');
@@ -207,6 +208,7 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
       const k = norm(cellValue(row.getCell(1).value));
       if (k) map[k] = cellValue(row.getCell(2).value);
     });
+    Object.assign(pm, map);
     const g = (k: string) => map[norm(k)];
     const setN = (k: string, f: (v: number) => void, clamp?: [number, number]) => {
       let v = num(g(k));
@@ -596,8 +598,17 @@ export async function importWorkbook(buf: ArrayBuffer | Uint8Array): Promise<Imp
           maxZ = Math.max(maxZ, p.z);
         }
       }
-      layout = { name: 'Layout da planilha', floor: { width: Math.ceil(maxX + 2), depth: Math.ceil(maxZ + 2) }, elements: els };
+      layout = { name: String(pm[norm('nome_galpao')] ?? 'Layout da planilha'), floor: { width: Math.ceil(maxX + 2), depth: Math.ceil(maxZ + 2) }, elements: els };
     }
+  }
+  // galpão em branco: a aba Layout vem vazia de propósito, então não se gera um galpão a partir dos parâmetros
+  if (!layout && ['s', 'sim', '1', 'true', 'x'].includes(norm(pm[norm('galpao_vazio')]))) {
+    layout = {
+      name: String(pm[norm('nome_galpao')] ?? 'Novo galpão'),
+      floor: { width: Number(pm[norm('piso_largura')]) || 60, depth: Number(pm[norm('piso_profundidade')]) || 40 },
+      elements: [],
+    };
+    found.push('Layout (em branco)');
   }
   if (!layout && hasParams) {
     layout = generateLayout({ ...defaultLayoutParams(), ...gp });
@@ -719,6 +730,10 @@ export async function buildWorkbook(sc: Scenario, layout: Layout | null): Promis
     ['furo_pct', sc.picking.stockout.pct, 'Furo por percentual: probabilidade de o endereço estar vazio ao chegar'],
     ['furo_enderecos', sc.picking.stockout.addresses.join(', '), 'Furo por posições: endereços vazios (ex.: A015, B023)'],
     ['processos_personalizados', sc.useCustomProcesses ? 'S' : 'N', 'S = vale o primeiro processo de cada tipo (recebimento, separação, palete full, expedição) da aba Processos'],
+    ['nome_galpao', layout?.name ?? '', 'Nome do galpão (também aparece na aba Layout)'],
+    ['piso_largura', layout?.floor.width ?? '', 'Largura do piso do galpão em metros'],
+    ['piso_profundidade', layout?.floor.depth ?? '', 'Profundidade do piso do galpão em metros'],
+    ['galpao_vazio', layout && layout.elements.length === 0 ? 'S' : 'N', 'S = galpão em branco: a aba Layout vazia não é substituída por um galpão gerado'],
     ['limite_espera_doca_min', sc.dockWaitThresholdMin, 'Espera na doca acima da qual o caminhão conta como gargalo (min)'],
     ['amr_trabalha_intervalos', sc.calendar.amrWorksDuringBreaks ? 'S' : 'N', 'S = AMR continuam trabalhando nos intervalos das pessoas'],
     ...(['entrada', 'saida'] as const).flatMap((dir): [string, any, string][] => {
