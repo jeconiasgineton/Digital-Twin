@@ -21,7 +21,7 @@ const SECTION_HINTS: Record<string, string> = {
   'Horizonte e metas': 'Quantas horas e dias simular, quando o turno começa e as metas de utilização e de espera. Comece por aqui: define o período que todos os outros dados usam.',
   'Equipamentos (catálogo)': 'Quantas empilhadeiras, paleteiras, transpaleteiras e AMRs você tem, com velocidade, capacidade e custo. Quantidade 0 significa que o equipamento não é usado.',
   'Pessoas': 'Quantos operários e conferentes trabalham, com a disponibilidade de cada um (quebras e paradas) e a carga manual máxima por pessoa.',
-  'Veículos e chegadas': 'Os tipos de caminhão (carreta, truque, toco, VUC, picape) com o tamanho do baú e os paletes por carga, além de como os veículos chegam: aleatório, em intervalo fixo ou em horário marcado.',
+  'Veículos e chegadas': 'Os tipos de caminhão (carreta, truck, toco, VUC, pickup) com o tamanho do baú e os paletes por carga, além de como os veículos chegam: aleatório, em intervalo fixo ou em horário marcado.',
   'Armazenagem': 'Como o palete é guardado: direto da doca ao endereço, ou em duas etapas (rua + equipamento sem elevação), e quais equipamentos fazem cada etapa.',
   'Separação (picking por palete)': 'Como os pedidos são separados: caixas por pedido, limite de caixas por palete, rota (em U ou zigue-zague), área de coleta e furos de estoque. Só vale se a separação por palete estiver ativa.',
   'Expedição (conferência, customização, embarque e liberação)': 'O que acontece com a carga antes da saída do caminhão: conferência, batimento com o pedido, customização de paletes, embarque e lacre. Escolha o formato básico ou as etapas.',
@@ -423,11 +423,11 @@ export function renderDataPanel(ctx: AppCtx): HTMLElement {
       numField('Limite de espera na doca (gargalo)', () => sc.dockWaitThresholdMin, (v) => ((sc.dockWaitThresholdMin = Math.max(0, v)), ch()), { step: 1, min: 0, unit: 'min', title: 'Caminhões que esperam mais que isso contam no indicador "% acima do limite"' }),
       h('b', null, 'Tipos de veículo'),
       h('p', { class: 'note' }, sc.vehicleTypes.length
-        ? 'O catálogo vale para o recebimento e para a expedição: cada tipo tem tamanho do baú, capacidade em paletes, tempo de docagem e participação própria em cada sentido. Fontes: capacidade da carreta (28) definida no projeto; toco 12, truque 16 e ¾ 6 de tabelas de lotação de transportadoras (baixa autoridade); baús, picape e participações são premissas editáveis.'
+        ? 'O catálogo vale para o recebimento e para a expedição: cada tipo tem tamanho do baú, capacidade em paletes, tempo de docagem e participação própria em cada sentido. Fontes: capacidade da carreta (28) definida no projeto; toco 12, truck 16 e ¾ 6 de tabelas de lotação de transportadoras (baixa autoridade); baús, pickup e participações são premissas editáveis.'
         : 'Sem tipos cadastrados: todos os caminhões são iguais (paletes por caminhão e manobra gerais). Restaure o catálogo ou adicione tipos para diferenciar o baú, a capacidade e o tempo de docagem.'),
       ...sc.vehicleTypes.map((v) => vehicleCard(ctx, v)),
       h('div', { class: 'row' },
-        ...(['carreta', 'truque', 'toco', 'vuc', 'picape'] as const).map((k) => h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle(k)); ch(); ctx.rerender(); } }, `+ ${({ carreta: 'Carreta', truque: 'Truque', toco: 'Toco', vuc: 'VUC', picape: 'Picape' })[k]}`)),
+        ...(['carreta', 'truque', 'toco', 'vuc', 'picape'] as const).map((k) => h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes.push(presetVehicle(k)); ch(); ctx.rerender(); } }, `+ ${({ carreta: 'Carreta', truque: 'Truck', toco: 'Toco', vuc: 'VUC', picape: 'Pickup' })[k]}`)),
         h('button', { class: 'b sm pri', title: 'Cadastra um tipo novo com o nome, o tamanho do baú e a capacidade que você definir', onclick: () => { sc.vehicleTypes.push(presetVehicle('novo')); ch(); ctx.rerender(); } }, '+ Novo veículo'),
         h('button', { class: 'b sm', onclick: () => { sc.vehicleTypes = defaultVehicleTypes(); ch(); ctx.rerender(); } }, 'Restaurar catálogo padrão')),
     ], false),

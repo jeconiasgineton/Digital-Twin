@@ -398,8 +398,8 @@ export interface VehicleStyle {
 const REAR = -6.7; // a traseira fica sempre no mesmo ponto: é ela que encosta na doca
 
 /**
- * Veículo conforme o tamanho: carreta (cavalo + semirreboque, 3 eixos), truque (baú rígido, eixo traseiro duplo),
- * toco (baú rígido, 2 eixos), VUC (baú baixo, cabine curta) e picape (carroceria aberta com 1 palete).
+ * Veículo conforme o tamanho: carreta (cavalo + semirreboque, 3 eixos), truck (baú rígido, eixo traseiro duplo),
+ * toco (baú rígido, 2 eixos), VUC (baú baixo, cabine curta) e pickup (carroceria aberta com 1 palete).
  * Comprimento ao longo de Z local; traseira em -Z (voltada para a doca).
  */
 export function buildTruck(kind: 'in' | 'out', style: VehicleStyle = { lengthM: 13.6 }): THREE.Group {

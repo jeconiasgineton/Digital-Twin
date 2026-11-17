@@ -18,15 +18,15 @@ export type VehicleKind = 'carreta' | 'truque' | 'truck' | 'toco' | 'vuc' | 'pic
 
 /**
  * Tipos conhecidos de veículo de carga. Capacidades em paletes (PBR 1,0 × 1,2 m): carreta 28 (referência definida
- * no projeto); toco 12, truque 16 e ¾/VUC 6 de tabelas de lotação de transportadoras (fontes de baixa autoridade);
- * baús e a picape (1 palete) são premissas. Participações e tempos de docagem também são premissas editáveis.
+ * no projeto); toco 12, truck 16 e ¾/VUC 6 de tabelas de lotação de transportadoras (fontes de baixa autoridade);
+ * baús e a pickup (1 palete) são premissas. Participações e tempos de docagem também são premissas editáveis.
  */
 export const VEHICLE_PRESETS: Record<Exclude<VehicleKind, 'truck'>, Omit<VehicleType, 'id'>> = {
   carreta: { name: 'Carreta', share: 0.4, shareIn: 0.45, shareOut: 0.25, dockTurnover: tri(120, 180, 300), capacityPallets: 28, pallets: { mean: 24, sd: 3, max: 28 }, trailerLengthM: 13.6 },
-  truque: { name: 'Truque', share: 0.3, shareIn: 0.3, shareOut: 0.3, dockTurnover: tri(60, 90, 150), capacityPallets: 16, pallets: { mean: 14, sd: 2, max: 16 }, trailerLengthM: 8.5 },
+  truque: { name: 'Truck', share: 0.3, shareIn: 0.3, shareOut: 0.3, dockTurnover: tri(60, 90, 150), capacityPallets: 16, pallets: { mean: 14, sd: 2, max: 16 }, trailerLengthM: 8.5 },
   toco: { name: 'Toco', share: 0.2, shareIn: 0.15, shareOut: 0.25, dockTurnover: tri(45, 70, 120), capacityPallets: 12, pallets: { mean: 10, sd: 1.5, max: 12 }, trailerLengthM: 6.5 },
   vuc: { name: 'VUC (3/4)', share: 0.07, shareIn: 0.07, shareOut: 0.15, dockTurnover: tri(30, 45, 90), capacityPallets: 6, pallets: { mean: 5, sd: 1, max: 6 }, trailerLengthM: 4.5 },
-  picape: { name: 'Picape', share: 0.03, shareIn: 0.03, shareOut: 0.05, dockTurnover: tri(20, 30, 60), capacityPallets: 1, pallets: { mean: 1, sd: 0, max: 1 }, trailerLengthM: 1.8 },
+  picape: { name: 'Pickup', share: 0.03, shareIn: 0.03, shareOut: 0.05, dockTurnover: tri(20, 30, 60), capacityPallets: 1, pallets: { mean: 1, sd: 0, max: 1 }, trailerLengthM: 1.8 },
   novo: { name: 'Novo veículo', share: 0.1, dockTurnover: tri(60, 90, 150), capacityPallets: 10, pallets: { mean: 8, sd: 1, max: 10 }, trailerLengthM: 6 },
 };
 
@@ -37,7 +37,7 @@ export function presetVehicle(kind: VehicleKind): VehicleType {
   return { id, ...JSON.parse(JSON.stringify(p)) } as VehicleType;
 }
 
-/** catálogo que já vem no cenário: carreta, truque, toco, VUC e picape */
+/** catálogo que já vem no cenário: carreta, truck, toco, VUC e pickup */
 export function defaultVehicleTypes(): VehicleType[] {
   return (['carreta', 'truque', 'toco', 'vuc', 'picape'] as const).map((k) => ({ id: k, ...JSON.parse(JSON.stringify(VEHICLE_PRESETS[k])) }) as VehicleType);
 }

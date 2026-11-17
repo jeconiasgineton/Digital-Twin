@@ -163,7 +163,7 @@ describe('catálogo de tipos de veículo (recebimento e expedição)', () => {
   const types = async () => (await import('../src/model/traffic'));
   it('o cenário já traz tipos conhecidos: carreta, truque, toco, VUC e picape, com baú e capacidade', async () => {
     const sc = defaultScenario();
-    expect(sc.vehicleTypes.map((v) => v.name)).toEqual(['Carreta', 'Truque', 'Toco', 'VUC (3/4)', 'Picape']);
+    expect(sc.vehicleTypes.map((v) => v.name)).toEqual(['Carreta', 'Truck', 'Toco', 'VUC (3/4)', 'Pickup']);
     expect(sc.vehicleTypes.map((v) => v.capacityPallets)).toEqual([28, 16, 12, 6, 1]);
     // maior veículo, maior baú e maior tempo de docagem
     const len = sc.vehicleTypes.map((v) => v.trailerLengthM);
@@ -206,9 +206,9 @@ describe('catálogo de tipos de veículo (recebimento e expedição)', () => {
     const res = new SimModel(sc, layout, 5).runAll();
     const by = Object.fromEntries(res.vehicleStats.map((v) => [v.name, v]));
     expect(by['Carreta'].trucks).toBeGreaterThan(3);
-    expect(by['Truque'].trucks + by['Toco'].trucks + by['VUC (3/4)'].trucks + by['Picape'].trucks).toBe(0);
+    expect(by['Truck'].trucks + by['Toco'].trucks + by['VUC (3/4)'].trucks + by['Pickup'].trucks).toBe(0);
     expect(by['Toco'].trucksOut).toBeGreaterThan(3);
-    expect(by['Carreta'].trucksOut + by['Truque'].trucksOut + by['VUC (3/4)'].trucksOut + by['Picape'].trucksOut).toBe(0);
+    expect(by['Carreta'].trucksOut + by['Truck'].trucksOut + by['VUC (3/4)'].trucksOut + by['Pickup'].trucksOut).toBe(0);
   });
   it('na expedição por etapas a carga é a capacidade do baú × ocupação', async () => {
     const { defaultExpedition } = await import('../src/model/expedition');
