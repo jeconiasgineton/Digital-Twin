@@ -94,6 +94,9 @@ export function renderLayoutPanel(ctx: AppCtx): HTMLElement {
   root.append(
     section('Galpão', [
       textField('Nome do galpão', () => ctx.layout.name ?? '', (v) => { ctx.layout.name = v.trim() || ctx.layout.name; ctx.layoutChanged('edit'); }),
+      numField('Largura do piso', () => ctx.layout.floor.width, (v) => ((ctx.layout.floor.width = v), ctx.view.setFloor(v, ctx.layout.floor.depth), ctx.layoutChanged('edit')), { min: 10, step: 1, unit: 'm' }),
+      numField('Profundidade do piso', () => ctx.layout.floor.depth, (v) => ((ctx.layout.floor.depth = v), ctx.view.setFloor(ctx.layout.floor.width, v), ctx.layoutChanged('edit')), { min: 10, step: 1, unit: 'm' }),
+      h('p', { class: 'note' }, 'Tamanho do piso: largura × profundidade em metros. Paredes e racks podem ser desenhados dentro dele.'),
       h('p', { class: 'note' }, 'O nome do galpão é separado do nome do modelo (em "Meus modelos"): um mesmo modelo pode ter mais de um galpão.'),
     ], true),
     section('Montagem do modelo (passo a passo)', [renderBuildGuide(ctx)], true),
@@ -108,8 +111,6 @@ export function renderLayoutPanel(ctx: AppCtx): HTMLElement {
         h('div', { class: 'card' }, h('div', { class: 'k' }, 'Esteiras / estações'), h('div', { class: 'v' }, `${counts('conveyor')} / ${counts('station')}`), h('div', { class: 's' }, `${fmt(ctx.layout.elements.filter((e) => e.type === 'conveyor').reduce((s, e) => s + e.length, 0), 0)} m de esteira`)),
       ),
       issues.length ? h('ul', { class: 'issues' }, issues.map((i) => h('li', { class: i.level === 'erro' ? 'err' : '' }, `${i.level === 'erro' ? '⛔' : '⚠️'} ${i.msg}`))) : h('p', { class: 'note' }, '✅ Layout consistente com o cenário.'),
-      numField('Largura do piso', () => ctx.layout.floor.width, (v) => ((ctx.layout.floor.width = v), ctx.view.setFloor(v, ctx.layout.floor.depth), ctx.layoutChanged('edit')), { min: 10, step: 1, unit: 'm' }),
-      numField('Profundidade do piso', () => ctx.layout.floor.depth, (v) => ((ctx.layout.floor.depth = v), ctx.view.setFloor(ctx.layout.floor.width, v), ctx.layoutChanged('edit')), { min: 10, step: 1, unit: 'm' }),
       selField('Grade (snap)', () => String(ctx.editor.snap) as string, (v) => (ctx.editor.snap = Number(v)), [['0', 'Livre'], ['0.1', '0,1 m'], ['0.5', '0,5 m'], ['1', '1 m'], ['2.8', '2,8 m (vão)']]),
     ]),
     section('Gerar galpão paramétrico', [

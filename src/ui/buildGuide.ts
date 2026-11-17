@@ -1,7 +1,7 @@
 import { SimModel } from '../sim/model';
 import { validate } from '../sim/world';
 import type { AppCtx } from './ctx';
-import { h, fmt } from './dom';
+import { h, fmt, toast as toastFn } from './dom';
 
 /**
  * "Montagem do modelo": guia para construir um galpão do zero, passo a passo.
@@ -14,9 +14,23 @@ interface Step {
   title: string;
   help: string;
   status: (ctx: AppCtx) => Status;
-  tab: string;
+  /** texto do botão e o que ele faz de fato (ativa a ferramenta, leva ao campo ou à aba) */
   go: string;
+  act: (ctx: AppCtx) => void;
 }
+
+/** ativa uma ferramenta de desenho e avisa como usá-la */
+const tool = (t: Parameters<AppCtx['editor']['setTool']>[0], msg: string) => (ctx: AppCtx) => {
+  ctx.openTab('layout');
+  ctx.editor.setTool(t);
+  toastFn(msg);
+};
+/** leva o foco para o topo do painel de Layout (onde ficam o nome e o tamanho do galpão) */
+const toTopOfLayout = (ctx: AppCtx) => {
+  ctx.openTab('layout');
+  document.getElementById('panel')?.scrollTo({ top: 0, behavior: 'smooth' });
+};
+const toDataTab = (ctx: AppCtx) => ctx.openTab('data');
 
 const count = (ctx: AppCtx, type: string) => ctx.layout.elements.filter((e) => e.type === type).length;
 const sum = (a: number[]) => a.reduce((s, v) => s + v, 0);
@@ -27,37 +41,37 @@ const STEPS: Step[] = [
     title: '1. Galpão (área do piso)',
     help: 'Defina o piso e o nome do galpão. A aba Layout tem a largura e a profundidade do piso.',
     status: (ctx) => (ctx.layout.floor.width >= 10 && ctx.layout.floor.depth >= 10 ? 'ok' : 'falta'),
-    tab: 'layout', go: 'Ir para o layout',
+    go: 'Definir tamanho do galpão', act: toTopOfLayout,
   },
   {
     title: '2. Docas de entrada',
-    help: 'Pelo menos uma doca de entrada para os caminhões chegarem. Use a ferramenta "Doca" na lateral esquerda.',
+    help: 'Pelo menos uma doca de entrada para os caminhões chegarem. Depois de clicar no botão, clique na planta para colocar a doca.',
     status: (ctx) => (count(ctx, 'dockIn') >= 1 ? 'ok' : 'falta'),
-    tab: 'layout', go: 'Desenhar docas',
+    go: 'Ativar a ferramenta Doca de entrada', act: tool('dockIn', 'Clique na planta para colocar a doca de entrada.'),
   },
   {
     title: '3. Chegada de caminhões',
     help: 'Quantos caminhões chegam por hora e quantos paletes trazem. Na aba Dados, seção "Demanda por hora" e "Veículos e chegadas".',
     status: (ctx) => (sum(ctx.scenario.inboundTrucksPerHour) > 0 ? 'ok' : 'falta'),
-    tab: 'data', go: 'Definir chegadas',
+    go: 'Ir para Dados (chegadas)', act: toDataTab,
   },
   {
     title: '4. Equipamentos',
     help: 'Empilhadeiras e demais equipamentos que descarregam e guardam. Na aba Dados, seção "Equipamentos (catálogo)".',
     status: (ctx) => (equipUnits(ctx) > 0 ? 'ok' : 'falta'),
-    tab: 'data', go: 'Adicionar equipamentos',
+    go: 'Ir para Dados (equipamentos)', act: toDataTab,
   },
   {
     title: '5. Racks (armazenagem)',
     help: 'Onde os paletes ficam guardados. Use a ferramenta "Rack" para desenhar os porta-paletes.',
     status: (ctx) => (count(ctx, 'rack') >= 1 ? 'ok' : 'falta'),
-    tab: 'layout', go: 'Desenhar racks',
+    go: 'Ativar a ferramenta Rack', act: tool('rack', 'Clique e arraste na planta para desenhar o rack.'),
   },
   {
     title: '6. Saída e expedição (opcional)',
     help: 'Docas de saída, caminhões de saída e pedidos. Pode ser feito depois do teste de descarga.',
     status: (ctx) => (count(ctx, 'dockOut') >= 1 && sum(ctx.scenario.outboundTrucksPerHour) > 0 ? 'ok' : 'opcional'),
-    tab: 'layout', go: 'Desenhar saída',
+    go: 'Ativar a ferramenta Doca de saída', act: tool('dockOut', 'Clique na planta para colocar a doca de saída.'),
   },
 ];
 
@@ -114,7 +128,7 @@ export function renderBuildGuide(ctx: AppCtx): HTMLElement {
           h('span', null, `${ICON[st]} ${s.title}`),
           h('span', { class: 'note' }, LABEL[st])),
         h('p', { class: 'note' }, s.help),
-        h('button', { class: 'b sm', onclick: () => ctx.openTab(s.tab) }, s.go),
+        h('button', { class: 'b sm', onclick: () => s.act(ctx) }, s.go),
       );
     })),
     h('div', { class: 'row' },
