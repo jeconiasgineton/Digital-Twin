@@ -32,3 +32,17 @@ describe('modelo em branco (começar do zero)', () => {
     expect(Number.isFinite(k.pickPalletsPerDay)).toBe(true);
   });
 });
+
+import { blankScenario } from '../src/model/blank';
+describe('cenário em branco', () => {
+  it('nasce sem chegadas, pedidos nem equipamentos; a simulação roda sem travar', () => {
+    const sc = blankScenario();
+    expect(sc.inboundTrucksPerHour.every((v) => v === 0)).toBe(true);
+    expect(sc.ordersPerHour.every((v) => v === 0)).toBe(true);
+    expect(sc.forklifts.count).toBe(0);
+    sc.days = 1;
+    sc.warmupHours = 0;
+    const k = new SimModel(sc, blank(), 3).runAll().kpis;
+    expect(k.palletsInPerDay).toBe(0);
+  });
+});

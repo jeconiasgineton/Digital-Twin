@@ -1,3 +1,4 @@
+import { renderBuildGuide } from './buildGuide';
 import type { Layout, LayoutElement } from '../model/types';
 import { defaultLayoutParams, generateLayout, type LayoutParams } from '../model/layoutGen';
 import { PLANT_ACCEPT, importPlant } from './plantImport';
@@ -91,6 +92,7 @@ export function renderLayoutPanel(ctx: AppCtx): HTMLElement {
   const issues = validate(ctx.layout, ctx.scenario);
 
   root.append(
+    section('Montagem do modelo (passo a passo)', [renderBuildGuide(ctx)], true),
     section('Elemento selecionado', propertiesBox(ctx)),
     section('Resumo do layout', [
       h('div', { class: 'cards' },

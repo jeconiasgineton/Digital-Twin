@@ -182,3 +182,14 @@ td.ok, .pill.ok { color: var(--ok); } td.warn, .pill.warn { color: var(--warn); 
 .lib-name { font-weight: 700; font-size: 13px; background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 3px 5px; }
 .lib-name:hover, .lib-name:focus { border-color: var(--line); background: var(--bg3); }
 @media (max-width: 760px) { .lib-row .row { width: 100%; } }
+
+/* montagem do modelo (passo a passo) */
+.build { display: grid; gap: 10px; }
+.build-steps { display: grid; gap: 8px; }
+.build-step { border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 6px; padding: 8px 10px; background: var(--bg); display: grid; gap: 4px; }
+.build-step.ok { border-left-color: var(--ok); }
+.build-step.falta { border-left-color: var(--warn); }
+.build-step.opcional { opacity: .75; }
+.build-step p { margin: 0; }
+.build-result { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--acc); border-radius: 8px; background: var(--bg3); }
+.build-result table { width: 100%; }

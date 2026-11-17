@@ -13,7 +13,7 @@ import { Editor, TOOL_LABEL, type Tool } from './ui/editor';
 import { loadExcelFile, pickExcel, downloadTemplate, renderDataPanel } from './ui/panelData';
 import { CURRENT_KEY, createModel, duplicateModel, nextName, readLibrary, removeModel, renameModel, upsertModel, writeLibrary, type KeyValueStore, type SavedModel } from './model/library';
 import { openLibraryModal } from './ui/libraryPanel';
-import { blankLayout } from './model/blank';
+import { blankLayout, blankScenario } from './model/blank';
 import { renderLayoutPanel } from './ui/panelLayout';
 import { renderResultsPanel } from './ui/panelResults';
 import { renderSimPanel } from './ui/panelSim';
@@ -148,7 +148,7 @@ function openModel(id: string) {
 }
 
 function newBlankModel() {
-  const s = defaultScenario();
+  const s = blankScenario();
   const l = blankLayout();
   const m = startModel(l.name, s, l);
   ctx.loadScenario(s);
